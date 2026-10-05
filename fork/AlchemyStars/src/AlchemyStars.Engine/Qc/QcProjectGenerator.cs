@@ -103,9 +103,11 @@ public static partial class QcProjectGenerator
             .AppendLine("\tblendwidth 2").AppendLine($"\tblend {param} 0 1").AppendLine("\tdelta").AppendLine("\trealtime").AppendLine("}");
 
     // ARC9 picks sequences by name automatically; these duplicate MW Base names under ARC9's.
+    // No enter_sights/exit_sights: CoD's ads_up only moves tag_ads, so ARC9 would snap back to hip idle after it.
+    // ARC9 ADS is procedural instead (IronSights solved by SolveSight).
     private static readonly (string Arc9, string Source)[] Arc9Aliases =
     [
-        ("ready", "draw_first"), ("enter_sights", "ads_in"), ("exit_sights", "ads_out"),
+        ("ready", "draw_first"),
         ("fire_empty", "fire_last"), ("bash", "melee_hit_01"), ("enter_sprint", "sprint_in"), ("exit_sprint", "sprint_out"),
     ];
 
@@ -340,8 +342,10 @@ public static partial class QcProjectGenerator
                 // ARC9 / Both: one combined model, bodygroup attachments driven by AttachmentElements.
                 var arc9Sequences = sequences.ToDictionary(name => name, name => (lengths.GetValueOrDefault(name, 1), checkpoints.GetValueOrDefault(name), sequenceSources[name]));
                 if (useArc9 && layers.Contains("sprint_loop")) arc9Sequences["idle_sprint"] = (lengths["idle"], null, "");
+                var adsUp = Path.Combine(output, "anims", "ads_up.smd");
+                var sight = File.Exists(adsUp) ? SolveSight(Path.Combine(output, "anims", "idle.smd"), adsUp) : null;
                 var arc9Lua = Arc9Lua.Write(output, new(weaponName, $"models/{modelDirectory}v_{weaponName}.mdl", $"models/{modelDirectory}w_{weaponName}.mdl",
-                    groups.Select(group => group.Select(item => (item.Token, RootBone(item.Part.FilePath))).ToArray()).ToArray(), arc9Sequences));
+                    groups.Select(group => group.Select(item => (item.Token, RootBone(item.Part.FilePath))).ToArray()).ToArray(), arc9Sequences, sight));
                 return new(viewQc, worldQc, sequences, layers, missing, LuaDirectory: arc9Lua, MaterialLog: materialLog);
             }
             var attachmentDirectory = $"{modelDirectory}attachments/{weaponName}/";
@@ -437,6 +441,62 @@ public static partial class QcProjectGenerator
 
     private static SkeletonMergePlan Plan(IEnumerable<ModelPartSpec> parts) =>
         SkeletonMergePlan.Build(parts.Select(AnimationExportEngine.ToCompatibilityPart), false);
+
+    /// <summary>
+    /// ARC9 IronSights reproducing CoD's ADS pose: the rigid move of tag_sight_on (in tag_view space) from the hip idle to
+    /// the last frame of ads_up. ARC9 adds Pos along (right, forward, up) and then rotates about the fixed up/right/forward
+    /// axes by Ang (p, y, r), i.e. Q = Rfwd(r) * Rright(y) * Rup(p); in view space (x fwd, y left, z up) that is Rx(r) Ry(-y) Rz(p).
+    /// </summary>
+    private static (Vector3 Pos, Vector3 Ang)? SolveSight(string idleSmd, string adsSmd)
+    {
+        if (SightPose(idleSmd) is not { } hip || SightPose(adsSmd) is not { } ads) return null;
+        var (t, q) = Mul(ads, Inverse(hip));
+        Vector3 Column(Vector3 axis) => Vector3.Transform(axis, q);
+        var (x, y, z) = (Column(Vector3.UnitX), Column(Vector3.UnitY), Column(Vector3.UnitZ));
+        const float Degrees = 180 / MathF.PI;
+        var pitchAboutRight = -MathF.Asin(Math.Clamp(z.X, -1, 1));
+        var yawAboutUp = MathF.Atan2(-y.X, x.X);
+        var rollAboutForward = MathF.Atan2(-z.Y, z.Z);
+        return (new Vector3(-t.Y, t.X, t.Z), new Vector3(yawAboutUp, pitchAboutRight, rollAboutForward) * Degrees);
+    }
+
+    /// <summary>tag_sight_on in tag_view space at the SMD's last frame.</summary>
+    private static (Vector3 P, Quaternion Q)? SightPose(string smd)
+    {
+        var names = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var parents = new Dictionary<int, int>();
+        var pose = new Dictionary<int, float[]>();
+        string? mode = null;
+        foreach (var line in File.ReadLines(smd))
+        {
+            var parts = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0) continue;
+            if (parts[0] is "nodes" or "skeleton") { mode = parts[0]; continue; }
+            if (parts[0] == "end") { if (mode == "skeleton") break; mode = null; continue; }
+            if (mode == "nodes")
+            {
+                var quoted = line.Split('"');
+                var index = int.Parse(parts[0], CultureInfo.InvariantCulture);
+                names[quoted[1]] = index;
+                parents[index] = int.Parse(quoted[2], CultureInfo.InvariantCulture);
+            }
+            // Later frames overwrite earlier ones: the last frame wins.
+            else if (mode == "skeleton" && parts[0] != "time")
+                pose[int.Parse(parts[0], CultureInfo.InvariantCulture)] = parts[1..7].Select(value => float.Parse(value, CultureInfo.InvariantCulture)).ToArray();
+        }
+        if (!names.TryGetValue("tag_view", out var view) || !names.TryGetValue("tag_sight_on", out var sight)) return null;
+        var cache = new Dictionary<int, (Vector3 P, Quaternion Q)>();
+        (Vector3 P, Quaternion Q) World(int bone)
+        {
+            if (cache.TryGetValue(bone, out var hit)) return hit;
+            var v = pose[bone];
+            // SMD euler: R = Rz * Ry * Rx.
+            var local = (new Vector3(v[0], v[1], v[2]), Quaternion.CreateFromAxisAngle(Vector3.UnitZ, v[5])
+                * Quaternion.CreateFromAxisAngle(Vector3.UnitY, v[4]) * Quaternion.CreateFromAxisAngle(Vector3.UnitX, v[3]));
+            return cache[bone] = parents[bone] < 0 ? local : Mul(World(parents[bone]), local);
+        }
+        return Mul(Inverse(World(view)), World(sight));
+    }
 
     /// <summary>
     /// Writes anims/&lt;layer&gt;_idle.smd: the idle's first pose held for the loop's frame count. Both blend

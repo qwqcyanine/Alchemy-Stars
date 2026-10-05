@@ -11,7 +11,8 @@ public sealed record Arc9Weapon(
     string ViewModel,
     string WorldModel,
     IReadOnlyList<(string Token, string Root)[]> Groups,
-    IReadOnlyDictionary<string, (int Frames, int? MagFrame, string Body)> Sequences);
+    IReadOnlyDictionary<string, (int Frames, int? MagFrame, string Body)> Sequences,
+    (System.Numerics.Vector3 Pos, System.Numerics.Vector3 Ang)? Sight = null);
 
 /// <summary>
 /// Writes a standalone ARC9 SWEP (lua/weapons/arc9_&lt;name&gt;.lua, layout of ARC9-COD2019's arc9_cod2019_sm_mp5) and a
@@ -218,10 +219,10 @@ public static partial class Arc9Lua
 
         -------------------------- POSITIONS
 
-        -- ADS uses the model's tag_ads camera motion via CamQCA; tune Pos/Ang until the sight lines up.
+        -- ADS is procedural: Pos/Ang reproduce CoD's ads_up end pose (tag_sight_on hip -> ADS).
         SWEP.IronSights = {
-            Pos = Vector(0, 0, 0),
-            Ang = Angle(0, 0, 0),
+            Pos = Vector({{{V(weapon.Sight?.Pos.X)}}}, {{{V(weapon.Sight?.Pos.Y)}}}, {{{V(weapon.Sight?.Pos.Z)}}}),
+            Ang = Angle({{{V(weapon.Sight?.Ang.X)}}}, {{{V(weapon.Sight?.Ang.Y)}}}, {{{V(weapon.Sight?.Ang.Z)}}}),
             Magnification = 1.15,
             ViewModelFOV = 64,
         }
@@ -282,6 +283,9 @@ public static partial class Arc9Lua
         end
 
         """.Replace("\r\n", "\n");
+
+    // + 0 turns -0 into 0.
+    private static string V(float? value) => ((value ?? 0) + 0f).ToString("0.###", CultureInfo.InvariantCulture);
 
     private static string Number(float value) => value.ToString("0.###", CultureInfo.InvariantCulture);
 
