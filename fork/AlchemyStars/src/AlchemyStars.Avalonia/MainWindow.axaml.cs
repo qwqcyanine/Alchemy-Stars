@@ -292,6 +292,7 @@ public sealed partial class MainWindow : Window
     private void OtherSectionClick(object? sender, RoutedEventArgs e) => ViewModel.ToggleOtherSection();
     private void CodWeaponDbPageClick(object? sender, RoutedEventArgs e) => ViewModel.SelectPage(WorkspacePage.CodWeaponDb);
     private void ModelMergerPageClick(object? sender, RoutedEventArgs e) => ViewModel.SelectPage(WorkspacePage.ModelMerger);
+    private void QcPageClick(object? sender, RoutedEventArgs e) => ViewModel.SelectPage(WorkspacePage.QcGenerator);
     private void LanguageClick(object? sender, RoutedEventArgs e) => ViewModel.ToggleLanguage();
     private void SystemLanguageClick(object? sender, RoutedEventArgs e) => ViewModel.UseSystemLanguage();
     private void SaveDefaultsClick(object? sender, RoutedEventArgs e) => ViewModel.SaveDefaults();

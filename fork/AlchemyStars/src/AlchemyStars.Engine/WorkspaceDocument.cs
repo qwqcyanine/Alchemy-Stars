@@ -63,6 +63,8 @@ public sealed class WorkspaceDocument : ObservableModel
     public bool MatchOldCallOfDuty { get => matchOldCallOfDuty; set => SetProperty(ref matchOldCallOfDuty, value); }
     public ObservableCollection<WorkspaceAnimation> Animations { get; set; } = [];
     public ObservableCollection<WorkspacePart> Parts { get; set; } = [];
+    /// <summary>QC generator page inputs, saved with the project.</summary>
+    public WorkspaceQcSettings Qc { get; set; } = new();
 
     public static WorkspaceDocument Create(string? outputFormat = null, bool castAnimationOnly = false, bool bakeRelevantBonesOnly = false) => new()
     {
@@ -70,6 +72,26 @@ public sealed class WorkspaceDocument : ObservableModel
         CastAnimationOnly = castAnimationOnly,
         BakeRelevantBonesOnly = bakeRelevantBonesOnly,
     };
+}
+
+public sealed class WorkspaceQcSettings
+{
+    public string HandsFile { get; set; } = string.Empty;
+    public string WeaponFile { get; set; } = string.Empty;
+    public List<string> Attachments { get; set; } = [];
+    public string AnimationsFolder { get; set; } = string.Empty;
+    public string LocomotionFolder { get; set; } = string.Empty;
+    public string OutputFolder { get; set; } = string.Empty;
+    public string ModelPath { get; set; } = string.Empty;
+    public string MaterialsPath { get; set; } = string.Empty;
+    public int Target { get; set; }
+    public float WalkScale { get; set; } = 1;
+    public float JogScale { get; set; } = 1;
+    public float SprintScale { get; set; } = 0.5f;
+    public float SuperSprintScale { get; set; } = 0.5f;
+    public bool ConvertMaterials { get; set; } = true;
+    public bool IncludeHands { get; set; }
+    public int MaterialMaxSize { get; set; } = 2048;
 }
 
 public sealed class WorkspacePart : ObservableModel

@@ -1,0 +1,83 @@
+<UserControl xmlns="https://github.com/avaloniaui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ xmlns:local="using:AlchemyStars.Avalonia"
+ x:Class="AlchemyStars.Avalonia.QcGeneratorView" x:DataType="local:MainWindowViewModel">
+  <Border Classes="workspace-panel" DragDrop.AllowDrop="True">
+    <Grid RowDefinitions="44,*">
+      <Border Classes="dock-header">
+        <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+          <local:ThemedIcon Classes="product-icon" Glyph="output-settings" IsHitTestVisible="False" />
+          <TextBlock Text="{Binding Text.QcNavigation}" Classes="dock-title" />
+        </StackPanel>
+      </Border>
+      <Grid Grid.Row="1" ColumnDefinitions="*,16,*" Margin="14">
+        <!-- Inputs -->
+        <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+          <StackPanel Spacing="12">
+            <TextBlock Text="{Binding Text.QcHelp}" Classes="muted" TextWrapping="Wrap" />
+            <TextBlock Text="{Binding Text.QcDropHelp}" Classes="muted" TextWrapping="Wrap" />
+            <StackPanel><TextBlock Text="{Binding Text.QcTarget}" Classes="field-label" />
+              <ComboBox HorizontalAlignment="Stretch" ItemsSource="{Binding QcTargetOptions}" SelectedIndex="{Binding QcTargetIndex, Mode=TwoWay}" AutomationProperties.Name="{Binding Text.QcTarget}" />
+              <TextBlock Text="{Binding QcTargetHelp}" Classes="muted" TextWrapping="Wrap" Margin="0,4,0,0" /></StackPanel>
+            <StackPanel Tag="hands" Background="Transparent"><TextBlock Text="{Binding Text.QcHandsFile}" Classes="field-label" />
+              <Grid ColumnDefinitions="*,Auto"><TextBox Text="{Binding QcHandsFile}" AutomationProperties.Name="{Binding Text.QcHandsFile}" />
+                <Button Grid.Column="1" Tag="hands" Click="BrowseClick" Margin="6,0,0,0" ToolTip.Tip="{Binding Text.QcHandsFile}" AutomationProperties.Name="{Binding Text.QcHandsFile}"><local:ThemedIcon Classes="product-icon" Glyph="import-assets" IsHitTestVisible="False" /></Button></Grid></StackPanel>
+            <StackPanel Tag="weapon" Background="Transparent"><TextBlock Text="{Binding Text.QcWeaponFile}" Classes="field-label" />
+              <Grid ColumnDefinitions="*,Auto"><TextBox Text="{Binding QcWeaponFile}" AutomationProperties.Name="{Binding Text.QcWeaponFile}" />
+                <Button Grid.Column="1" Tag="weapon" Click="BrowseClick" Margin="6,0,0,0" ToolTip.Tip="{Binding Text.QcWeaponFile}" AutomationProperties.Name="{Binding Text.QcWeaponFile}"><local:ThemedIcon Classes="product-icon" Glyph="import-assets" IsHitTestVisible="False" /></Button></Grid></StackPanel>
+            <StackPanel Tag="attachments" Background="Transparent">
+              <Grid ColumnDefinitions="*,Auto,Auto">
+                <TextBlock Text="{Binding Text.QcAttachments}" Classes="field-label" VerticalAlignment="Center" />
+                <Button Grid.Column="1" Classes="panel-command" Tag="attachments" Click="BrowseClick" ToolTip.Tip="{Binding Text.QcAddAttachments}" AutomationProperties.Name="{Binding Text.QcAddAttachments}"><local:ThemedIcon Classes="product-icon" Glyph="add" IsHitTestVisible="False" /></Button>
+                <Button Grid.Column="2" Classes="panel-command" Click="RemoveAttachmentClick" ToolTip.Tip="{Binding Text.QcRemoveAttachment}" AutomationProperties.Name="{Binding Text.QcRemoveAttachment}"><local:ThemedIcon Classes="product-icon" Glyph="delete" IsHitTestVisible="False" /></Button>
+              </Grid>
+              <ListBox ItemsSource="{Binding QcAttachments}" SelectedItem="{Binding QcSelectedAttachment, Mode=TwoWay}" Height="160" AutomationProperties.Name="{Binding Text.QcAttachments}" />
+            </StackPanel>
+            <StackPanel Tag="anims" Background="Transparent"><TextBlock Text="{Binding Text.QcAnimationsFolder}" Classes="field-label" />
+              <Grid ColumnDefinitions="*,Auto"><TextBox Text="{Binding QcAnimationsFolder}" AutomationProperties.Name="{Binding Text.QcAnimationsFolder}" />
+                <Button Grid.Column="1" Tag="anims" Click="BrowseClick" Margin="6,0,0,0" ToolTip.Tip="{Binding Text.QcAnimationsFolder}" AutomationProperties.Name="{Binding Text.QcAnimationsFolder}"><local:ThemedIcon Classes="product-icon" Glyph="import-assets" IsHitTestVisible="False" /></Button></Grid></StackPanel>
+            <StackPanel Tag="loco" Background="Transparent"><TextBlock Text="{Binding Text.QcLocomotionFolder}" Classes="field-label" />
+              <Grid ColumnDefinitions="*,Auto"><TextBox Text="{Binding QcLocomotionFolder}" AutomationProperties.Name="{Binding Text.QcLocomotionFolder}" />
+                <Button Grid.Column="1" Tag="loco" Click="BrowseClick" Margin="6,0,0,0" ToolTip.Tip="{Binding Text.QcLocomotionFolder}" AutomationProperties.Name="{Binding Text.QcLocomotionFolder}"><local:ThemedIcon Classes="product-icon" Glyph="import-assets" IsHitTestVisible="False" /></Button></Grid></StackPanel>
+            <StackPanel Tag="output" Background="Transparent"><TextBlock Text="{Binding Text.QcOutputFolder}" Classes="field-label" />
+              <Grid ColumnDefinitions="*,Auto"><TextBox Text="{Binding QcOutputFolder}" AutomationProperties.Name="{Binding Text.QcOutputFolder}" />
+                <Button Grid.Column="1" Tag="output" Click="BrowseClick" Margin="6,0,0,0" ToolTip.Tip="{Binding Text.QcOutputFolder}" AutomationProperties.Name="{Binding Text.QcOutputFolder}"><local:ThemedIcon Classes="product-icon" Glyph="import-assets" IsHitTestVisible="False" /></Button></Grid></StackPanel>
+            <StackPanel><TextBlock Text="{Binding Text.QcScaleHeader}" Classes="field-label" TextWrapping="Wrap" />
+              <Grid ColumnDefinitions="110,*,48" RowDefinitions="Auto,Auto,Auto,Auto">
+                <TextBlock Text="walk" VerticalAlignment="Center" />
+                <Slider Grid.Column="1" Minimum="0" Maximum="1.5" TickFrequency="0.05" IsSnapToTickEnabled="True" Value="{Binding QcWalkScale}" AutomationProperties.Name="walk" />
+                <TextBlock Grid.Column="2" Text="{Binding QcWalkScale, StringFormat={}{0:0.00}}" VerticalAlignment="Center" HorizontalAlignment="Right" />
+                <TextBlock Grid.Row="1" Text="jog" VerticalAlignment="Center" />
+                <Slider Grid.Row="1" Grid.Column="1" Minimum="0" Maximum="1.5" TickFrequency="0.05" IsSnapToTickEnabled="True" Value="{Binding QcJogScale}" AutomationProperties.Name="jog" />
+                <TextBlock Grid.Row="1" Grid.Column="2" Text="{Binding QcJogScale, StringFormat={}{0:0.00}}" VerticalAlignment="Center" HorizontalAlignment="Right" />
+                <TextBlock Grid.Row="2" Text="sprint" VerticalAlignment="Center" />
+                <Slider Grid.Row="2" Grid.Column="1" Minimum="0" Maximum="1.5" TickFrequency="0.05" IsSnapToTickEnabled="True" Value="{Binding QcSprintScale}" AutomationProperties.Name="sprint" />
+                <TextBlock Grid.Row="2" Grid.Column="2" Text="{Binding QcSprintScale, StringFormat={}{0:0.00}}" VerticalAlignment="Center" HorizontalAlignment="Right" />
+                <TextBlock Grid.Row="3" Text="super sprint" VerticalAlignment="Center" />
+                <Slider Grid.Row="3" Grid.Column="1" Minimum="0" Maximum="1.5" TickFrequency="0.05" IsSnapToTickEnabled="True" Value="{Binding QcSuperSprintScale}" AutomationProperties.Name="super sprint" />
+                <TextBlock Grid.Row="3" Grid.Column="2" Text="{Binding QcSuperSprintScale, StringFormat={}{0:0.00}}" VerticalAlignment="Center" HorizontalAlignment="Right" />
+              </Grid></StackPanel>
+            <StackPanel><TextBlock Text="{Binding Text.QcModelName}" Classes="field-label" />
+              <TextBox Text="{Binding QcModelName}" PlaceholderText="weapons/mw3/pmike" AutomationProperties.Name="{Binding Text.QcModelName}" /></StackPanel>
+            <StackPanel><TextBlock Text="{Binding Text.QcMaterialsPath}" Classes="field-label" />
+              <TextBox Text="{Binding QcMaterialsPath}" PlaceholderText="models/weapons/xxx/" AutomationProperties.Name="{Binding Text.QcMaterialsPath}" /></StackPanel>
+            <StackPanel Spacing="6">
+              <CheckBox IsChecked="{Binding QcIncludeHands}" AutomationProperties.Name="{Binding Text.QcIncludeHands}">
+                <TextBlock Text="{Binding Text.QcIncludeHands}" TextWrapping="Wrap" />
+              </CheckBox>
+              <CheckBox IsChecked="{Binding QcConvertMaterials}" AutomationProperties.Name="{Binding Text.QcConvertMaterials}">
+                <TextBlock Text="{Binding Text.QcConvertMaterials}" TextWrapping="Wrap" />
+              </CheckBox>
+              <Grid ColumnDefinitions="Auto,*" IsEnabled="{Binding QcConvertMaterials}">
+                <TextBlock Text="{Binding Text.QcMaterialSize}" VerticalAlignment="Center" Margin="0,0,12,0" />
+                <ComboBox Grid.Column="1" HorizontalAlignment="Left" MinWidth="120" ItemsSource="{Binding QcMaterialSizeOptions}" SelectedIndex="{Binding QcMaterialSizeIndex, Mode=TwoWay}" AutomationProperties.Name="{Binding Text.QcMaterialSize}" />
+              </Grid></StackPanel>
+            <Button Classes="primary" Click="GenerateClick" IsEnabled="{Binding !IsBusy}" Content="{Binding Text.QcGenerate}" HorizontalAlignment="Left" />
+          </StackPanel>
+        </ScrollViewer>
+        <!-- Result -->
+        <TextBox Grid.Column="2" Text="{Binding QcLog}" IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True"
+            VerticalAlignment="Stretch" VerticalContentAlignment="Top" AutomationProperties.Name="{Binding Text.QcNavigation}" />
+      </Grid>
+    </Grid>
+  </Border>
+</UserControl>

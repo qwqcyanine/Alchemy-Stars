@@ -12,7 +12,9 @@ namespace AlchemyStars.Engine;
 
 internal static class SmdModelExporter
 {
-    internal static void Save(string output, string mergedCast, Skeleton skeleton)
+    /// <param name="skipMeshes">Merged meshes to skip; with <paramref name="takeMeshes"/> selects one part's meshes.</param>
+    internal static void Save(string output, string mergedCast, Skeleton skeleton, float scale = 1,
+        int skipMeshes = 0, int takeMeshes = int.MaxValue)
     {
         var bind = new SkeletonAnimation("bind", skeleton) { TransformType = TransformType.Absolute, Framerate = 30 };
         for (var index = 0; index < skeleton.Bones.Count; index++)
@@ -20,11 +22,11 @@ internal static class SmdModelExporter
             bind.Targets[index].AddTranslationFrame(0, skeleton.Bones[index].BaseLocalTranslation);
             bind.Targets[index].AddRotationFrame(0, skeleton.Bones[index].BaseLocalRotation);
         }
-        SmdAnimationExporter.Save(output, bind);
+        SmdAnimationExporter.Save(output, bind, scale);
         using var writer = new StreamWriter(output, true, new UTF8Encoding(false));
         writer.WriteLine("triangles");
         var model = CastReader.Load(mergedCast).RootNodes.SelectMany(DescendantsAndSelf).OfType<ModelNode>().Single();
-        foreach (var mesh in model.Meshes)
+        foreach (var mesh in model.Meshes.Skip(skipMeshes).Take(takeMeshes))
         {
             var positions = mesh.VertexPositionBuffer.Values;
             var normals = mesh.VertexNormalBuffer?.Values;
@@ -47,10 +49,11 @@ internal static class SmdModelExporter
                 for (var corner = 0; corner < 3; corner++)
                 {
                     var vertex = indices[index + corner];
-                    var position = positions[vertex];
+                    var position = positions[vertex] * scale;
                     var normal = normals is not null ? normals[vertex] : faceNormal;
                     normal = normal.LengthSquared() > 1e-12f ? Vector3.Normalize(normal) : faceNormal;
-                    var texture = uv is not null ? uv[vertex] : Vector2.Zero;
+                    // CAST UVs have a top-left origin; SMD (Source, Blender) expects bottom-left.
+                    var texture = uv is not null ? new Vector2(uv[vertex].X, 1 - uv[vertex].Y) : Vector2.Zero;
                     var links = new Dictionary<int, float>();
                     for (var influence = 0; influence < mesh.MaximumWeightInfluence; influence++)
                     {

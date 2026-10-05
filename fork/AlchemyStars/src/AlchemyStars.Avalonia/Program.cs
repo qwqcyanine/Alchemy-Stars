@@ -59,6 +59,8 @@ internal static class Program
             try { ModelMergerServiceSmoke.RunAsync(mergerOutput).GetAwaiter().GetResult(); return 0; }
             catch (Exception error) { Console.Error.WriteLine(error); return 1; }
         }
+        var qcIndex = Array.IndexOf(args, "--qc-smoke");
+        if (qcIndex >= 0) return QcSmoke.Run(args.Skip(qcIndex + 1).ToArray());
         if (GetOption(args, "--axis-smoke") is { } axisDirectory)
         {
             try { CastAxisSmoke.Run(axisDirectory, args.Contains("--fbx")); return 0; }
@@ -166,6 +168,7 @@ internal static class Program
         "dual" => WorkspacePage.DualAnimations,
         "cod-weapons" => WorkspacePage.CodWeaponDb,
         "model-merger" => WorkspacePage.ModelMerger,
+        "qc" => WorkspacePage.QcGenerator,
         "settings" => WorkspacePage.Settings,
         "about" => WorkspacePage.About,
         _ => null,
