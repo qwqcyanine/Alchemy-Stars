@@ -12,3 +12,4 @@ __pycache__/
 cast.cfg
 .commandcode/
 .work-codweapondb/
+*.md

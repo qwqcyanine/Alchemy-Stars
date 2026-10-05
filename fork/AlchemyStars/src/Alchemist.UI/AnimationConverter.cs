@@ -362,7 +362,9 @@ namespace Alchemist.UI
                     }
                 }
 
-                foreach (var note in sampler.Animation.Actions)
+                // CoD keys a pair's start and end on one frame (reload_fast: ik_out_start/end both at 0). Starts go first so
+                // the stable sort below keeps the end's weight last at that frame.
+                foreach (var note in sampler.Animation.Actions.OrderBy(note => note.Name.Contains("_end", StringComparison.Ordinal)))
                 {
                     switch (note.Name)
                     {
@@ -438,11 +440,18 @@ namespace Alchemist.UI
             Logging.Logger.Info($"Built weights from notetracks");
 
             // Ensure the weights we just built are in-order
-            player.Layers.ForEach(x => x.Weights.Sort((x, y) => x.Frame.CompareTo(y.Frame)));
-            player.Solvers.ForEach(x => x.Weights.Sort((x, y) => x.Frame.CompareTo(y.Frame)));
+            // Stable: List.Sort could swap same-frame keys, turning an instant IK release into a fade over the clip.
+            static void SortStable(List<AnimationKeyFrame<float, float>> keys)
+            {
+                var sorted = keys.OrderBy(key => key.Frame).ToList();
+                keys.Clear();
+                keys.AddRange(sorted);
+            }
+            player.Layers.ForEach(x => SortStable(x.Weights));
+            player.Solvers.ForEach(x => SortStable(x.Weights));
             foreach (var solver in player.Solvers.OfType<IKTwoBoneSolver>())
             {
-                solver.MoverWeights.Sort((a, b) => a.Frame.CompareTo(b.Frame));
+                SortStable(solver.MoverWeights);
                 if (solver.MoverWeights.Count > 0 && solver.MoverWeights[0].Frame > 0)
                     solver.MoverWeights.Insert(0, new(0, 0));
             }

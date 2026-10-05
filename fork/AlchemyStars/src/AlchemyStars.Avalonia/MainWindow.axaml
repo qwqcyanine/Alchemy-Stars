@@ -48,6 +48,7 @@
           </Button>
           <StackPanel IsVisible="{Binding IsOtherSectionExpanded}">
             <Button Classes="activity" Click="DualPageClick" ToolTip.Tip="{Binding Text.DualAnimations}" AutomationProperties.Name="{Binding Text.DualAnimations}" Classes.selected="{Binding IsDualPage}"><StackPanel Orientation="Horizontal"><local:ThemedIcon Classes="product-icon" Glyph="dual-wield" IsHitTestVisible="False" /><TextBlock Classes="navigation-label" Text="{Binding Text.DualAnimations}" /></StackPanel></Button>
+            <Button x:Name="QcNavigation" Classes="activity" Click="QcPageClick" ToolTip.Tip="{Binding Text.QcNavigation}" AutomationProperties.Name="{Binding Text.QcNavigation}" Classes.selected="{Binding IsQcPage}"><StackPanel Orientation="Horizontal"><local:ThemedIcon Classes="product-icon" Glyph="output-settings" IsHitTestVisible="False" /><TextBlock Classes="navigation-label" Text="{Binding Text.QcNavigation}" /></StackPanel></Button>
             <Button x:Name="CodDbNavigation" Classes="activity" Click="CodWeaponDbPageClick" ToolTip.Tip="{Binding Text.CodDbNavigation}" AutomationProperties.Name="{Binding Text.CodDbNavigation}" AutomationProperties.AcceleratorKey="Ctrl+6" Classes.selected="{Binding IsCodWeaponDbPage}"><StackPanel Orientation="Horizontal"><local:ThemedIcon Classes="product-icon" Glyph="cod-weapon-database" IsHitTestVisible="False" /><TextBlock Classes="navigation-label" Text="{Binding Text.CodDbNavigation}" /></StackPanel></Button>
           </StackPanel>
         </StackPanel>
@@ -65,7 +66,7 @@
             <TextBlock Text="{Binding CurrentProjectLabel}" Classes="muted command-text page-command-text" FontSize="11" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding CurrentProjectLabel}" />
           </StackPanel>
         </Grid>
-        <StackPanel Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,12,0" Orientation="Horizontal" Spacing="2" VerticalAlignment="Center" IsVisible="{Binding !IsModelMergerPage}">
+        <StackPanel Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,12,0" Orientation="Horizontal" Spacing="2" VerticalAlignment="Center" IsVisible="{Binding ShowsProjectToolbar}">
           <Button Classes="toolbar" Click="NewProjectClick" ToolTip.Tip="{Binding Text.NewProjectShortcut}" AutomationProperties.Name="{Binding Text.NewProject}">
             <local:ThemedIcon Classes="product-icon" Glyph="project-workspace" IsHitTestVisible="False" Width="24" Height="24" />
           </Button>
@@ -83,7 +84,7 @@
               IsVisible="{Binding IsAnimationsPage}" IsEnabled="{Binding CanExportSelectedAnimation}"
               Content="{Binding Text.ExportSelectedAnimation}" ToolTip.Tip="{Binding Text.ExportSelectedAnimationShortcut}"
               AutomationProperties.Name="{Binding Text.ExportSelectedAnimation}" AutomationProperties.AcceleratorKey="Ctrl+Shift+E" />
-          <Button Classes="primary" Click="ExportClick" MinWidth="112" IsEnabled="{Binding !IsBusy}" AutomationProperties.Name="{Binding CurrentExportLabel}" ToolTip.Tip="Ctrl+E">
+          <Button Classes="primary" Click="ExportClick" MinWidth="112" IsVisible="{Binding !IsQcPage}" IsEnabled="{Binding !IsBusy}" AutomationProperties.Name="{Binding CurrentExportLabel}" ToolTip.Tip="Ctrl+E">
             <StackPanel Orientation="Horizontal" Spacing="8">
               <local:ThemedIcon Classes="product-icon" Glyph="export-animation" IsHitTestVisible="False" Width="18" Height="18" />
               <TextBlock Classes="command-action-text" Text="{Binding CurrentExportLabel}" VerticalAlignment="Center" />
@@ -205,6 +206,7 @@
     </Grid>
     <local:DualWieldView x:Name="DualWorkspace" Grid.Column="1" Grid.Row="1" IsVisible="{Binding IsDualPage}" />
     <local:CodWeaponDbView x:Name="CodDbWorkspace" Grid.Column="1" Grid.Row="1" IsVisible="{Binding IsCodWeaponDbPage}" />
+    <local:QcGeneratorView Grid.Column="1" Grid.Row="1" IsVisible="{Binding IsQcPage}" />
     <local:ModelMergerView x:Name="ModelMergerWorkspace" Grid.Column="1" Grid.Row="1" IsVisible="{Binding IsModelMergerPage}" />
     <!-- Settings workspace -->
     <ScrollViewer Grid.Column="1" Grid.Row="1" IsVisible="{Binding IsSettingsPage}" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">

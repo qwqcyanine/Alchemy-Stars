@@ -12,7 +12,14 @@ namespace AlchemyStars.Engine;
 
 internal static class SmdModelExporter
 {
-    internal static void Save(string output, string mergedCast, Skeleton skeleton)
+    /// <param name="skipMeshes">Merged meshes to skip; with <paramref name="takeMeshes"/> selects one part's meshes.</param>
+    /// <param name="meshFilter">Keeps a mesh only if true for the names of the bones its vertices are weighted to.</param>
+    /// <param name="boneMap">CAST weight bone index -> index in <paramref name="skeleton"/>, when that is a rebuilt rig.</param>
+    /// <returns>Meshes written.</returns>
+    /// <param name="keepMeshes">Merged mesh indices to write, when a part is split into several SMDs.</param>
+    internal static int Save(string output, string mergedCast, Skeleton skeleton, float scale = 1,
+        int skipMeshes = 0, int takeMeshes = int.MaxValue, Func<IReadOnlySet<string>, bool>? meshFilter = null, IReadOnlyList<int>? boneMap = null,
+        IReadOnlySet<int>? keepMeshes = null)
     {
         var bind = new SkeletonAnimation("bind", skeleton) { TransformType = TransformType.Absolute, Framerate = 30 };
         for (var index = 0; index < skeleton.Bones.Count; index++)
@@ -20,18 +27,23 @@ internal static class SmdModelExporter
             bind.Targets[index].AddTranslationFrame(0, skeleton.Bones[index].BaseLocalTranslation);
             bind.Targets[index].AddRotationFrame(0, skeleton.Bones[index].BaseLocalRotation);
         }
-        SmdAnimationExporter.Save(output, bind);
+        SmdAnimationExporter.Save(output, bind, scale);
         using var writer = new StreamWriter(output, true, new UTF8Encoding(false));
         writer.WriteLine("triangles");
         var model = CastReader.Load(mergedCast).RootNodes.SelectMany(DescendantsAndSelf).OfType<ModelNode>().Single();
-        foreach (var mesh in model.Meshes)
+        var written = 0;
+        var meshIndex = skipMeshes - 1;
+        foreach (var mesh in model.Meshes.Skip(skipMeshes).Take(takeMeshes))
         {
+            if (keepMeshes is not null && !keepMeshes.Contains(++meshIndex)) continue;
+            var bones = mesh.VertexWeightBoneBuffer is { } boneBuffer ? Integers(boneBuffer).Select(bone => boneMap is null || (uint)bone >= boneMap.Count ? bone : boneMap[bone]).ToArray() : [];
+            var weights = mesh.VertexWeightValueBuffer?.Values;
+            if (meshFilter is not null && !meshFilter(WeightedBones(skeleton, bones, weights))) continue;
+            written++;
             var positions = mesh.VertexPositionBuffer.Values;
             var normals = mesh.VertexNormalBuffer?.Values;
             var uv = (mesh.GetUVLayer(0) as CastArrayProperty<Vector2>)?.Values;
             var indices = Integers(mesh.FaceBuffer);
-            var bones = mesh.VertexWeightBoneBuffer is { } boneBuffer ? Integers(boneBuffer) : [];
-            var weights = mesh.VertexWeightValueBuffer?.Values;
             var material = mesh.Material?.Name;
             if (string.IsNullOrWhiteSpace(material)) material = "material";
             if (material.Contains('\n') || material.Contains('\r')) throw new InvalidDataException("Invalid material name.");
@@ -47,10 +59,11 @@ internal static class SmdModelExporter
                 for (var corner = 0; corner < 3; corner++)
                 {
                     var vertex = indices[index + corner];
-                    var position = positions[vertex];
+                    var position = positions[vertex] * scale;
                     var normal = normals is not null ? normals[vertex] : faceNormal;
                     normal = normal.LengthSquared() > 1e-12f ? Vector3.Normalize(normal) : faceNormal;
-                    var texture = uv is not null ? uv[vertex] : Vector2.Zero;
+                    // CAST UVs have a top-left origin; SMD (Source, Blender) expects bottom-left.
+                    var texture = uv is not null ? new Vector2(uv[vertex].X, 1 - uv[vertex].Y) : Vector2.Zero;
                     var links = new Dictionary<int, float>();
                     for (var influence = 0; influence < mesh.MaximumWeightInfluence; influence++)
                     {
@@ -61,7 +74,7 @@ internal static class SmdModelExporter
                             throw new InvalidDataException("Invalid skin weights.");
                         links[bone] = links.GetValueOrDefault(bone) + weights[weightIndex];
                     }
-                    if (links.Count == 0) links[0] = 1;
+                    if (links.Count == 0) links[boneMap is { Count: > 0 } ? boneMap[0] : 0] = 1;
                     var total = links.Values.Sum();
                     var primaryBone = links.MaxBy(link => link.Value).Key;
                     writer.Write(FormattableString.Invariant($"{primaryBone} {position.X:R} {position.Y:R} {position.Z:R} {normal.X:R} {normal.Y:R} {normal.Z:R} {texture.X:R} {texture.Y:R} {links.Count}"));
@@ -72,6 +85,16 @@ internal static class SmdModelExporter
             }
         }
         writer.WriteLine("end");
+        return written;
+    }
+
+    private static HashSet<string> WeightedBones(Skeleton skeleton, int[] bones, IReadOnlyList<float>? weights)
+    {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var index = 0; index < bones.Length; index++)
+            if ((weights is null || index < weights.Count && weights[index] > 0) && (uint)bones[index] < skeleton.Bones.Count)
+                names.Add(skeleton.Bones[bones[index]].Name!);
+        return names;
     }
 
     private static int[] Integers(CastProperty property) => property switch
