@@ -26,7 +26,8 @@ public sealed record QcProjectRequest(
     QcLocomotionScale? Scale = null,
     bool ConvertMaterials = false,
     int MaterialMaxSize = 2048,
-    bool IncludeHands = false);
+    bool IncludeHands = false,
+    string PrintName = "");
 
 /// <summary>Amplitude (0..1.5) of shared-locomotion weapon/camera motion per loop family.</summary>
 public sealed record QcLocomotionScale(float Walk = 1, float Jog = 1, float Sprint = 0.5f, float SuperSprint = 0.5f)
@@ -345,7 +346,7 @@ public static partial class QcProjectGenerator
                 var adsUp = Path.Combine(output, "anims", "ads_up.smd");
                 var sight = File.Exists(adsUp) ? SolveSight(Path.Combine(output, "anims", "idle.smd"), adsUp) : null;
                 var arc9Lua = Arc9Lua.Write(output, new(weaponName, $"models/{modelDirectory}v_{weaponName}.mdl", $"models/{modelDirectory}w_{weaponName}.mdl",
-                    groups.Select(group => group.Select(item => (item.Token, RootBone(item.Part.FilePath))).ToArray()).ToArray(), arc9Sequences, sight));
+                    groups.Select(group => group.Select(item => (item.Token, RootBone(item.Part.FilePath))).ToArray()).ToArray(), arc9Sequences, sight, request.PrintName.Trim()));
                 return new(viewQc, worldQc, sequences, layers, missing, LuaDirectory: arc9Lua, MaterialLog: materialLog);
             }
             var attachmentDirectory = $"{modelDirectory}attachments/{weaponName}/";
@@ -353,7 +354,7 @@ public static partial class QcProjectGenerator
             var lua = MwBaseLua.Write(output, new(weaponName, $"models/{modelDirectory}v_{weaponName}.mdl", $"models/{modelDirectory}w_{weaponName}.mdl",
                 $"models/{attachmentDirectory}", groups.Select(group => group.Select(item => (item.Token, RootBone(item.Part.FilePath))).ToArray()).ToArray(),
                 sequences.Select(name => (name, lengths.GetValueOrDefault(name, 1), checkpoints.GetValueOrDefault(name))).ToArray(),
-                layers.Where(layer => layer.StartsWith("grip_", StringComparison.Ordinal)).ToArray()));
+                layers.Where(layer => layer.StartsWith("grip_", StringComparison.Ordinal)).ToArray(), request.PrintName.Trim()));
             return new(viewQc, worldQc, sequences, layers, missing, attachmentQcs, lua, materialLog);
         }
         finally

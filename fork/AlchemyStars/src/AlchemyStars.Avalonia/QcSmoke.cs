@@ -9,13 +9,13 @@ internal static class QcSmoke
         {
             if (args.Length < 4) throw new ArgumentException("usage: --qc-smoke <models> <anims> <locomotion|-> <output> [both|mwbase|arc9]");
             Check();
-            CheckUi(args[0], args[1], args[3]);
+            var printName = CheckUi(args[0], args[1], args[3]);
             var parts = Directory.GetFiles(args[0], "*_LOD0.cast", SearchOption.AllDirectories)
                 .Select(path => new ModelPartSpec(path, ModelPartClassifier.Classify(path).Kind))
                 .OrderBy(part => part.Kind).ThenBy(part => part.FilePath, StringComparer.OrdinalIgnoreCase).ToArray();
             var target = args.Length > 4 && !args[4].StartsWith("--", StringComparison.Ordinal) ? Enum.Parse<QcTarget>(args[4], true) : QcTarget.Both;
             var result = QcProjectGenerator.Generate(new(parts, args[1], args[2] == "-" ? "" : args[2], args[3], Target: target, Scale: new(),
-                ConvertMaterials: args.Contains("--materials"), IncludeHands: args.Contains("--hands")));
+                ConvertMaterials: args.Contains("--materials"), IncludeHands: args.Contains("--hands"), PrintName: printName));
             foreach (var line in result.MaterialLog ?? []) Console.WriteLine("material: " + line);
             Console.WriteLine(result.ViewModelQc);
             Console.WriteLine(result.WorldModelQc);
@@ -30,7 +30,7 @@ internal static class QcSmoke
     }
 
     /// <summary>Drag-drop routing and project save/load round-trip of the QC page inputs.</summary>
-    private static void CheckUi(string models, string animations, string output)
+    private static string CheckUi(string models, string animations, string output)
     {
         void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException("QC UI: " + message); }
         var casts = Directory.GetFiles(models, "*_LOD0.cast", SearchOption.AllDirectories);
@@ -45,6 +45,12 @@ internal static class QcSmoke
             vm.DropQcPaths(casts, null);
             Require(vm.QcHandsFile == hands && File.Exists(vm.QcWeaponFile), "auto-detect missed hands or receiver");
             Require(vm.QcAttachments.Count == casts.Length - 2, $"expected {casts.Length - 2} attachments, got {vm.QcAttachments.Count}");
+            vm.FillQcPrintNameAsync().GetAwaiter().GetResult();
+            var printName = vm.QcPrintName;
+            Console.WriteLine($"print name: {Path.GetFileName(vm.QcWeaponFile)} -> '{printName}'");
+            vm.QcPrintName = "Custom Name";
+            vm.FillQcPrintNameAsync().GetAwaiter().GetResult();
+            Require(vm.QcPrintName == "Custom Name", "auto-fill overwrote a typed display name");
             var clip = Directory.GetFiles(animations, "*.cast")[0];
             vm.DropQcPaths([clip], null);
             Require(vm.QcAnimationsFolder == Path.GetDirectoryName(clip), "animation clip did not set the animations folder");
@@ -63,7 +69,8 @@ internal static class QcSmoke
             Require(vm.QcHandsFile.Length == 0 && vm.QcAttachments.Count == 0, "new project kept QC inputs");
             vm.LoadProject(project);
             Require(vm.QcHandsFile == hands && vm.QcAttachments.Count == casts.Length - 2 && vm.QcOutputFolder == output
-                && vm.QcTargetIndex == 2 && vm.QcModelName == "weapons/test/gun", "project round-trip lost QC inputs");
+                && vm.QcTargetIndex == 2 && vm.QcModelName == "weapons/test/gun" && vm.QcPrintName == "Custom Name", "project round-trip lost QC inputs");
+            return printName;
         }
         finally { Directory.Delete(directory, true); }
     }

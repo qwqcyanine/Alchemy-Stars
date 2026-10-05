@@ -12,7 +12,8 @@ public sealed record Arc9Weapon(
     string WorldModel,
     IReadOnlyList<(string Token, string Root)[]> Groups,
     IReadOnlyDictionary<string, (int Frames, int? MagFrame, string Body)> Sequences,
-    (System.Numerics.Vector3 Pos, System.Numerics.Vector3 Ang)? Sight = null);
+    (System.Numerics.Vector3 Pos, System.Numerics.Vector3 Ang)? Sight = null,
+    string PrintName = "");
 
 /// <summary>
 /// Writes a standalone ARC9 SWEP (lua/weapons/arc9_&lt;name&gt;.lua, layout of ARC9-COD2019's arc9_cod2019_sm_mp5) and a
@@ -150,7 +151,7 @@ public static partial class Arc9Lua
         SWEP.Spawnable = true
         SWEP.Category = "ARC9 - Generated"
         SWEP.SubCategory = "Submachine Guns"
-        SWEP.PrintName = "{{{weapon.Name}}}"
+        SWEP.PrintName = "{{{MwBaseLua.LuaString(weapon.PrintName.Length > 0 ? weapon.PrintName : weapon.Name)}}}"
         SWEP.Class = "Submachine Gun"
         SWEP.Description = [[Converted from Call of Duty CAST assets.]]
 

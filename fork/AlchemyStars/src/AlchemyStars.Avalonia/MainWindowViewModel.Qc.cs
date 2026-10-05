@@ -5,13 +5,14 @@ namespace AlchemyStars.Avalonia;
 public sealed partial class MainWindowViewModel
 {
     private string qcHandsFile = "", qcWeaponFile = "", qcAnimationsFolder = "", qcLocomotionFolder = "", qcOutputFolder = "";
-    private string qcModelName = "", qcMaterialsPath = "", qcLog = "";
+    private string qcModelName = "", qcMaterialsPath = "", qcPrintName = "", qcAutoPrintName = "", qcLog = "";
     private string? qcSelectedAttachment;
     public bool IsQcPage => SelectedPage == WorkspacePage.QcGenerator;
     // The model merger works on folders; the QC page saves its inputs in the project file.
     public bool ShowsProjectToolbar => !IsModelMergerPage;
     public string QcHandsFile { get => qcHandsFile; set { qcHandsFile = value ?? ""; OnPropertyChanged(); } }
-    public string QcWeaponFile { get => qcWeaponFile; set { qcWeaponFile = value ?? ""; OnPropertyChanged(); } }
+    public string QcWeaponFile { get => qcWeaponFile; set { qcWeaponFile = value ?? ""; OnPropertyChanged(); _ = FillQcPrintNameAsync(); } }
+    public string QcPrintName { get => qcPrintName; set { qcPrintName = value ?? ""; OnPropertyChanged(); } }
     public ObservableCollection<string> QcAttachments { get; } = [];
     public string? QcSelectedAttachment { get => qcSelectedAttachment; set { qcSelectedAttachment = value; OnPropertyChanged(); } }
     public string QcAnimationsFolder { get => qcAnimationsFolder; set { qcAnimationsFolder = value ?? ""; OnPropertyChanged(); } }
@@ -110,11 +111,26 @@ public sealed partial class MainWindowViewModel
             QcAttachments.Add(file);
     }
 
+    /// <summary>
+    /// Looks the receiver's codename (vm_jup_jp03_sm_pmike_rec_000 → sm_pmike) up in the COD weapon
+    /// database and fills the display name. A name the user typed is kept; only a blank or previously
+    /// auto-filled name is replaced.
+    /// </summary>
+    internal async Task FillQcPrintNameAsync()
+    {
+        var file = QcWeaponFile;
+        if (string.IsNullOrWhiteSpace(file) || !await WaitForCodWeaponDbAsync(TimeSpan.FromSeconds(30)).ConfigureAwait(true)) return;
+        if (file != QcWeaponFile || codCatalog?.MatchAsset(file) is not { } match) return;
+        if (QcPrintName.Length > 0 && QcPrintName != qcAutoPrintName) return;
+        QcPrintName = qcAutoPrintName = match.Name;
+        FooterStatus = string.Format(System.Globalization.CultureInfo.CurrentCulture, Text.QcPrintNameMatched, match.Name, match.GameLabel, match.Codename);
+    }
+
     internal void SaveQcToWorkspace() => Workspace.Qc = new()
     {
         HandsFile = QcHandsFile, WeaponFile = QcWeaponFile, Attachments = [.. QcAttachments],
         AnimationsFolder = QcAnimationsFolder, LocomotionFolder = QcLocomotionFolder, OutputFolder = QcOutputFolder,
-        ModelPath = QcModelName, MaterialsPath = QcMaterialsPath, Target = QcTargetIndex,
+        ModelPath = QcModelName, MaterialsPath = QcMaterialsPath, PrintName = QcPrintName, Target = QcTargetIndex,
         WalkScale = (float)QcWalkScale, JogScale = (float)QcJogScale, SprintScale = (float)QcSprintScale, SuperSprintScale = (float)QcSuperSprintScale,
         ConvertMaterials = QcConvertMaterials, MaterialMaxSize = QcMaterialSizes[QcMaterialSizeIndex], IncludeHands = QcIncludeHands,
     };
@@ -122,6 +138,8 @@ public sealed partial class MainWindowViewModel
     private void LoadQcFromWorkspace()
     {
         var qc = Workspace.Qc ?? new();
+        // Name first: setting the receiver auto-fills only a blank name, so a saved name survives the load.
+        QcPrintName = qc.PrintName ?? ""; qcAutoPrintName = "";
         QcHandsFile = qc.HandsFile; QcWeaponFile = qc.WeaponFile;
         QcAttachments.Clear();
         foreach (var file in qc.Attachments ?? []) QcAttachments.Add(file);
@@ -148,7 +166,7 @@ public sealed partial class MainWindowViewModel
             ];
             var request = new QcProjectRequest(parts, QcAnimationsFolder, QcLocomotionFolder, QcOutputFolder, QcModelName.Trim(), QcMaterialsPath.Trim(), (QcTarget)QcTargetIndex,
                 new QcLocomotionScale((float)QcWalkScale, (float)QcJogScale, (float)QcSprintScale, (float)QcSuperSprintScale),
-                QcConvertMaterials, QcMaterialSizes[QcMaterialSizeIndex], QcIncludeHands);
+                QcConvertMaterials, QcMaterialSizes[QcMaterialSizeIndex], QcIncludeHands, QcPrintName.Trim());
             var result = await Task.Run(() => QcProjectGenerator.Generate(request));
             QcLog = $"{result.ViewModelQc}\n{result.WorldModelQc}\n\n{Text.QcSequences} ({result.Sequences.Count}): {string.Join(", ", result.Sequences)}\n\n"
                 + $"{Text.QcLayers} ({result.Layers.Count}): {string.Join(", ", result.Layers)}"
@@ -188,6 +206,8 @@ public sealed partial class UiText
     public string QcLocomotionFolder => L("共享 locomotion 目录（可选）", "Shared locomotion folder (optional)");
     public string QcOutputFolder => L("输出目录", "Output folder");
     public string QcModelName => L("模型路径（生成 v_/w_，留空自动）", "Model path (writes v_/w_, blank = automatic)");
+    public string QcPrintName => L("武器显示名（SWEP.PrintName，选择武器主体后按代号自动从 COD 武器库填入）", "Weapon display name (SWEP.PrintName, auto-filled from the COD weapon database by the receiver codename)");
+    public string QcPrintNameMatched => L("COD 武器库匹配：{0}（{1} · {2}）", "COD weapon database match: {0} ({1} · {2})");
     public string QcMaterialsPath => L("$cdmaterials（留空自动）", "$cdmaterials (blank = automatic)");
     public string QcGenerate => L("生成 QC", "Generate QC");
     public string QcGenerating => L("正在生成 QC 与 SMD…", "Generating QC and SMDs…");

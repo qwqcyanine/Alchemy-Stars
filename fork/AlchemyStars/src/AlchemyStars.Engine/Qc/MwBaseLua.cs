@@ -12,7 +12,8 @@ public sealed record MwBaseWeapon(
     string AttachmentModels,
     IReadOnlyList<(string Token, string Root)[]> Groups,
     IReadOnlyList<(string Name, int Frames, int? MagFrame)> Sequences,
-    IReadOnlyList<string> GripLayers);
+    IReadOnlyList<string> GripLayers,
+    string PrintName = "");
 
 /// <summary>
 /// Writes a drop-in MW Base (mg_base) SWEP: lua/weapons/mg_&lt;name&gt;/{shared,animations,customization}.lua plus one
@@ -128,7 +129,7 @@ public static class MwBaseLua
         SWEP.Base = "mg_base"
         SWEP.GripPoseParameters = {{{{string.Join(", ", weapon.GripLayers.Select(item => $"\"{item}\""))}}}}
 
-        SWEP.PrintName = "{{{weapon.Name}}}"
+        SWEP.PrintName = "{{{LuaString(weapon.PrintName.Length > 0 ? weapon.PrintName : weapon.Name)}}}"
         SWEP.Category = "Modern Warfare"
         SWEP.SubCategory = "Generated"
         SWEP.Spawnable = true
@@ -201,4 +202,7 @@ public static class MwBaseLua
     /// <summary>Lua/file-safe lowercase identifier.</summary>
     public static string Identifier(string text) =>
         new string(text.ToLowerInvariant().Select(c => char.IsAsciiLetterOrDigit(c) ? c : '_').ToArray()).Trim('_');
+
+    /// <summary>Escapes text for a double-quoted Lua string (display names like 9mm "PM").</summary>
+    public static string LuaString(string text) => text.Replace("\\", "\\\\").Replace("\"", "\\\"");
 }
