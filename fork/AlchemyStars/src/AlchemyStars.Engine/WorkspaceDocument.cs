@@ -81,6 +81,7 @@ public sealed class WorkspaceQcSettings
     public List<string> Attachments { get; set; } = [];
     public string AnimationsFolder { get; set; } = string.Empty;
     public string LocomotionFolder { get; set; } = string.Empty;
+    public string SoundsFolder { get; set; } = string.Empty;
     public string OutputFolder { get; set; } = string.Empty;
     public string ModelPath { get; set; } = string.Empty;
     public string MaterialsPath { get; set; } = string.Empty;

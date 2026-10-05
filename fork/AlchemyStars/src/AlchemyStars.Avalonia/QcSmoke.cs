@@ -15,7 +15,8 @@ internal static class QcSmoke
                 .OrderBy(part => part.Kind).ThenBy(part => part.FilePath, StringComparer.OrdinalIgnoreCase).ToArray();
             var target = args.Length > 4 && !args[4].StartsWith("--", StringComparison.Ordinal) ? Enum.Parse<QcTarget>(args[4], true) : QcTarget.Both;
             var result = QcProjectGenerator.Generate(new(parts, args[1], args[2] == "-" ? "" : args[2], args[3], Target: target, Scale: new(),
-                ConvertMaterials: args.Contains("--materials"), IncludeHands: args.Contains("--hands"), PrintName: printName));
+                ConvertMaterials: args.Contains("--materials"), IncludeHands: args.Contains("--hands"), PrintName: printName,
+                SoundDirectory: args.SkipWhile(arg => arg != "--sounds").Skip(1).FirstOrDefault() ?? ""));
             foreach (var line in result.MaterialLog ?? []) Console.WriteLine("material: " + line);
             Console.WriteLine(result.ViewModelQc);
             Console.WriteLine(result.WorldModelQc);
@@ -24,6 +25,11 @@ internal static class QcSmoke
             Console.WriteLine("missing: " + string.Join(' ', result.MissingLayers));
             foreach (var qc in result.AttachmentQcs ?? []) Console.WriteLine("attachment: " + qc);
             if (result.LuaDirectory is not null) Console.WriteLine("lua: " + result.LuaDirectory);
+            if (result.Sounds is { } sounds)
+            {
+                Console.WriteLine($"sounds: {sounds.Aliases.Count} resolved, {sounds.Missing.Count} missing, script {sounds.SoundScript}");
+                foreach (var line in sounds.Missing) Console.WriteLine("missing sound: " + line);
+            }
             return result.Sequences.Contains("idle") ? 0 : 1;
         }
         catch (Exception error) { Console.Error.WriteLine(error); return 1; }
@@ -58,6 +64,8 @@ internal static class QcSmoke
             Require(vm.QcLocomotionFolder == Path.GetDirectoryName(clip), "field drop did not fill locomotion");
             Directory.CreateDirectory(output);
             vm.DropQcPaths([output], "output");
+            vm.DropQcPaths([output], "sounds");
+            Require(vm.QcSoundsFolder == output, "folder drop did not fill sounds");
             Require(vm.QcOutputFolder == output, "folder drop did not fill output");
             vm.QcTargetIndex = 2;
             vm.QcModelName = "weapons/test/gun";
@@ -69,7 +77,7 @@ internal static class QcSmoke
             Require(vm.QcHandsFile.Length == 0 && vm.QcAttachments.Count == 0, "new project kept QC inputs");
             vm.LoadProject(project);
             Require(vm.QcHandsFile == hands && vm.QcAttachments.Count == casts.Length - 2 && vm.QcOutputFolder == output
-                && vm.QcTargetIndex == 2 && vm.QcModelName == "weapons/test/gun" && vm.QcPrintName == "Custom Name", "project round-trip lost QC inputs");
+                && vm.QcTargetIndex == 2 && vm.QcModelName == "weapons/test/gun" && vm.QcPrintName == "Custom Name" && vm.QcSoundsFolder == output, "project round-trip lost QC inputs");
             return printName;
         }
         finally { Directory.Delete(directory, true); }
@@ -99,6 +107,21 @@ internal static class QcSmoke
         Is(QcProjectGenerator.EventLine("ik_in_start_right_hand", 9, "reload", ref seen), "{ event 9021 9 \"1\" }");
         Is(QcProjectGenerator.EventLine("reload checkpoint", 30, "reload", ref seen), "{ event 9031 30 \"ResetBullets\" }");
         Is(QcProjectGenerator.EventLine("reload checkpoint", 40, "reload", ref seen), null);
+        // 48 kHz PCM16 (Source rejects it) is resampled to 44.1 kHz; 44.1 kHz input is left alone.
+        static byte[] Wav(int rate, int frames)
+        {
+            using var stream = new MemoryStream();
+            using var w = new BinaryWriter(stream);
+            w.Write("RIFF"u8); w.Write(36 + frames * 2); w.Write("WAVEfmt "u8); w.Write(16); w.Write((short)1); w.Write((short)1);
+            w.Write(rate); w.Write(rate * 2); w.Write((short)2); w.Write((short)16); w.Write("data"u8); w.Write(frames * 2);
+            for (var i = 0; i < frames; i++) w.Write((short)i);
+            w.Flush();
+            return stream.ToArray();
+        }
+        var resampled = CodSoundResolver.Resample(Wav(48000, 4800));
+        Is(resampled is null ? null : $"{BitConverter.ToInt32(resampled, 24)} {BitConverter.ToInt32(resampled, 40)}", "44100 8820");
+        Is(CodSoundResolver.Resample(Wav(44100, 10)) is null ? "kept" : "resampled", "kept");
+        Is(string.Join(' ', CodSoundResolver.Aliases(["{ event 5004 3 \"wfoly_plr_x_01\" }\n{ event 5004 4 \"Viewmodel.Small\" }", "{ event 5004 9 \"wfoly_plr_x_01\" }"])), "wfoly_plr_x_01");
         Is(QcProjectGenerator.Token("vm_jup_jp03_sm_pmike_mag_30_9p_000", "vm_jup_jp03_sm_pmike_rec_000"), "mag_30_9p");
         Is(QcProjectGenerator.Token("vm_jup_jp03_sm_pmike_rec_000", "vm_jup_jp03_sm_pmike_rec_000"), "rec");
     }

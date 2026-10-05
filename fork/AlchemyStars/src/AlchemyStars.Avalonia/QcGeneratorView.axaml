@@ -38,6 +38,9 @@
             <StackPanel Tag="loco" Background="Transparent"><TextBlock Text="{Binding Text.QcLocomotionFolder}" Classes="field-label" />
               <Grid ColumnDefinitions="*,Auto"><TextBox Text="{Binding QcLocomotionFolder}" AutomationProperties.Name="{Binding Text.QcLocomotionFolder}" />
                 <Button Grid.Column="1" Tag="loco" Click="BrowseClick" Margin="6,0,0,0" ToolTip.Tip="{Binding Text.QcLocomotionFolder}" AutomationProperties.Name="{Binding Text.QcLocomotionFolder}"><local:ThemedIcon Classes="product-icon" Glyph="import-assets" IsHitTestVisible="False" /></Button></Grid></StackPanel>
+            <StackPanel Tag="sounds" Background="Transparent"><TextBlock Text="{Binding Text.QcSoundsFolder}" Classes="field-label" TextWrapping="Wrap" />
+              <Grid ColumnDefinitions="*,Auto"><TextBox Text="{Binding QcSoundsFolder}" AutomationProperties.Name="{Binding Text.QcSoundsFolder}" />
+                <Button Grid.Column="1" Tag="sounds" Click="BrowseClick" Margin="6,0,0,0" ToolTip.Tip="{Binding Text.QcSoundsFolder}" AutomationProperties.Name="{Binding Text.QcSoundsFolder}"><local:ThemedIcon Classes="product-icon" Glyph="import-assets" IsHitTestVisible="False" /></Button></Grid></StackPanel>
             <StackPanel Tag="output" Background="Transparent"><TextBlock Text="{Binding Text.QcOutputFolder}" Classes="field-label" />
               <Grid ColumnDefinitions="*,Auto"><TextBox Text="{Binding QcOutputFolder}" AutomationProperties.Name="{Binding Text.QcOutputFolder}" />
                 <Button Grid.Column="1" Tag="output" Click="BrowseClick" Margin="6,0,0,0" ToolTip.Tip="{Binding Text.QcOutputFolder}" AutomationProperties.Name="{Binding Text.QcOutputFolder}"><local:ThemedIcon Classes="product-icon" Glyph="import-assets" IsHitTestVisible="False" /></Button></Grid></StackPanel>

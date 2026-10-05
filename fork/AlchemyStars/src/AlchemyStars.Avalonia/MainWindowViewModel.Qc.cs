@@ -4,7 +4,7 @@ namespace AlchemyStars.Avalonia;
 
 public sealed partial class MainWindowViewModel
 {
-    private string qcHandsFile = "", qcWeaponFile = "", qcAnimationsFolder = "", qcLocomotionFolder = "", qcOutputFolder = "";
+    private string qcHandsFile = "", qcWeaponFile = "", qcAnimationsFolder = "", qcLocomotionFolder = "", qcSoundsFolder = "", qcOutputFolder = "";
     private string qcModelName = "", qcMaterialsPath = "", qcPrintName = "", qcAutoPrintName = "", qcLog = "";
     private string? qcSelectedAttachment;
     public bool IsQcPage => SelectedPage == WorkspacePage.QcGenerator;
@@ -17,6 +17,7 @@ public sealed partial class MainWindowViewModel
     public string? QcSelectedAttachment { get => qcSelectedAttachment; set { qcSelectedAttachment = value; OnPropertyChanged(); } }
     public string QcAnimationsFolder { get => qcAnimationsFolder; set { qcAnimationsFolder = value ?? ""; OnPropertyChanged(); } }
     public string QcLocomotionFolder { get => qcLocomotionFolder; set { qcLocomotionFolder = value ?? ""; OnPropertyChanged(); } }
+    public string QcSoundsFolder { get => qcSoundsFolder; set { qcSoundsFolder = value ?? ""; OnPropertyChanged(); } }
     public string QcOutputFolder { get => qcOutputFolder; set { qcOutputFolder = value ?? ""; OnPropertyChanged(); } }
     public string QcModelName { get => qcModelName; set { qcModelName = value ?? ""; OnPropertyChanged(); } }
     public string QcMaterialsPath { get => qcMaterialsPath; set { qcMaterialsPath = value ?? ""; OnPropertyChanged(); } }
@@ -55,10 +56,11 @@ public sealed partial class MainWindowViewModel
             else AddQcAttachments(files);
             return;
         }
-        var current = field switch { "anims" => QcAnimationsFolder, "loco" => QcLocomotionFolder, _ => QcOutputFolder };
+        var current = field switch { "anims" => QcAnimationsFolder, "loco" => QcLocomotionFolder, "sounds" => QcSoundsFolder, _ => QcOutputFolder };
         if (await picker.PickFolderAsync(current) is not { } path) return;
         if (field == "anims") QcAnimationsFolder = path;
         else if (field == "loco") QcLocomotionFolder = path;
+        else if (field == "sounds") QcSoundsFolder = path;
         else QcOutputFolder = path;
     }
 
@@ -83,6 +85,7 @@ public sealed partial class MainWindowViewModel
             case "attachments": AddQcAttachments(casts); return;
             case "anims" when paths.Count > 0: QcAnimationsFolder = Folder(paths[0]); return;
             case "loco" when paths.Count > 0: QcLocomotionFolder = Folder(paths[0]); return;
+            case "sounds" when paths.Count > 0: QcSoundsFolder = Folder(paths[0]); return;
             case "output" when paths.Count > 0: QcOutputFolder = Folder(paths[0]); return;
         }
         var unrecognized = 0;
@@ -129,7 +132,7 @@ public sealed partial class MainWindowViewModel
     internal void SaveQcToWorkspace() => Workspace.Qc = new()
     {
         HandsFile = QcHandsFile, WeaponFile = QcWeaponFile, Attachments = [.. QcAttachments],
-        AnimationsFolder = QcAnimationsFolder, LocomotionFolder = QcLocomotionFolder, OutputFolder = QcOutputFolder,
+        AnimationsFolder = QcAnimationsFolder, LocomotionFolder = QcLocomotionFolder, SoundsFolder = QcSoundsFolder, OutputFolder = QcOutputFolder,
         ModelPath = QcModelName, MaterialsPath = QcMaterialsPath, PrintName = QcPrintName, Target = QcTargetIndex,
         WalkScale = (float)QcWalkScale, JogScale = (float)QcJogScale, SprintScale = (float)QcSprintScale, SuperSprintScale = (float)QcSuperSprintScale,
         ConvertMaterials = QcConvertMaterials, MaterialMaxSize = QcMaterialSizes[QcMaterialSizeIndex], IncludeHands = QcIncludeHands,
@@ -143,7 +146,7 @@ public sealed partial class MainWindowViewModel
         QcHandsFile = qc.HandsFile; QcWeaponFile = qc.WeaponFile;
         QcAttachments.Clear();
         foreach (var file in qc.Attachments ?? []) QcAttachments.Add(file);
-        QcAnimationsFolder = qc.AnimationsFolder; QcLocomotionFolder = qc.LocomotionFolder; QcOutputFolder = qc.OutputFolder;
+        QcAnimationsFolder = qc.AnimationsFolder; QcLocomotionFolder = qc.LocomotionFolder; QcSoundsFolder = qc.SoundsFolder ?? ""; QcOutputFolder = qc.OutputFolder;
         QcModelName = qc.ModelPath; QcMaterialsPath = qc.MaterialsPath; QcTargetIndex = qc.Target;
         QcWalkScale = qc.WalkScale; QcJogScale = qc.JogScale; QcSprintScale = qc.SprintScale; QcSuperSprintScale = qc.SuperSprintScale;
         QcConvertMaterials = qc.ConvertMaterials; QcIncludeHands = qc.IncludeHands; QcMaterialSizeIndex = Math.Max(0, Array.IndexOf(QcMaterialSizes, qc.MaterialMaxSize));
@@ -166,12 +169,16 @@ public sealed partial class MainWindowViewModel
             ];
             var request = new QcProjectRequest(parts, QcAnimationsFolder, QcLocomotionFolder, QcOutputFolder, QcModelName.Trim(), QcMaterialsPath.Trim(), (QcTarget)QcTargetIndex,
                 new QcLocomotionScale((float)QcWalkScale, (float)QcJogScale, (float)QcSprintScale, (float)QcSuperSprintScale),
-                QcConvertMaterials, QcMaterialSizes[QcMaterialSizeIndex], QcIncludeHands, QcPrintName.Trim());
+                QcConvertMaterials, QcMaterialSizes[QcMaterialSizeIndex], QcIncludeHands, QcPrintName.Trim(), QcSoundsFolder.Trim());
             var result = await Task.Run(() => QcProjectGenerator.Generate(request));
             QcLog = $"{result.ViewModelQc}\n{result.WorldModelQc}\n\n{Text.QcSequences} ({result.Sequences.Count}): {string.Join(", ", result.Sequences)}\n\n"
                 + $"{Text.QcLayers} ({result.Layers.Count}): {string.Join(", ", result.Layers)}"
                 + (result.MissingLayers.Count == 0 ? "" : $"\n\n{Text.QcMissingLayers}: {string.Join(", ", result.MissingLayers)}")
                 + (result.AttachmentQcs is { Count: > 0 } atts ? $"\n\n{Text.QcAttachmentModels} ({atts.Count}):\n{string.Join("\n", atts)}" : "")
+                + (result.Sounds is { } sounds
+                    ? $"\n\n{Text.QcSounds} ({sounds.Aliases.Count}/{sounds.Aliases.Count + sounds.Missing.Count})" + (sounds.SoundScript is { } script ? $": {script}" : "")
+                        + (sounds.Missing.Count == 0 ? "" : $"\n{Text.QcMissingSounds} ({sounds.Missing.Count}):\n{string.Join("\n", sounds.Missing)}")
+                    : "")
                 + (result.LuaDirectory is { } lua ? $"\n\nLua: {lua}" : "")
                 + (result.MaterialLog is { } mats ? $"\n\n{Text.QcMaterials} ({mats.Count(line => line.StartsWith("ok", StringComparison.Ordinal))}/{mats.Count}):\n{string.Join("\n", mats)}" : "");
             FooterStatus = Text.QcDone;
@@ -204,6 +211,9 @@ public sealed partial class UiText
     public string QcRemoveAttachment => L("移除选中附件", "Remove selected attachment");
     public string QcAnimationsFolder => L("武器动画目录", "Weapon animations folder");
     public string QcLocomotionFolder => L("共享 locomotion 目录（可选）", "Shared locomotion folder (optional)");
+    public string QcSoundsFolder => L("声音目录（可选，saluki 导出的 sounds；按动画 .cast 的 wfoly 音效事件自动复制）", "Sounds folder (optional, saluki-exported sounds; copied by the animation CASTs' wfoly sound events)");
+    public string QcSounds => L("声音（已匹配别名 / 动画引用别名）", "Sounds (resolved aliases / aliases used by animations)");
+    public string QcMissingSounds => L("缺失的声音", "Missing sounds");
     public string QcOutputFolder => L("输出目录", "Output folder");
     public string QcModelName => L("模型路径（生成 v_/w_，留空自动）", "Model path (writes v_/w_, blank = automatic)");
     public string QcPrintName => L("武器显示名（SWEP.PrintName，选择武器主体后按代号自动从 COD 武器库填入）", "Weapon display name (SWEP.PrintName, auto-filled from the COD weapon database by the receiver codename)");

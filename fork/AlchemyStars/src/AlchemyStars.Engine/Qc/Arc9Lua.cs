@@ -13,7 +13,8 @@ public sealed record Arc9Weapon(
     IReadOnlyList<(string Token, string Root)[]> Groups,
     IReadOnlyDictionary<string, (int Frames, int? MagFrame, string Body)> Sequences,
     (System.Numerics.Vector3 Pos, System.Numerics.Vector3 Ang)? Sight = null,
-    string PrintName = "");
+    string PrintName = "",
+    IReadOnlyCollection<string>? Sounds = null);
 
 /// <summary>
 /// Writes a standalone ARC9 SWEP (lua/weapons/arc9_&lt;name&gt;.lua, layout of ARC9-COD2019's arc9_cod2019_sm_mp5) and a
@@ -87,12 +88,12 @@ public static partial class Arc9Lua
         slots.AppendLine("}");
 
         File.WriteAllText(Path.Combine(root, "weapons", className + ".lua"),
-            Header(weapon, className) + "\n" + Animations(weapon.Sequences) + "\n" + elements + "\n" + slots);
+            Header(weapon, className) + "\n" + Animations(weapon.Sequences, weapon.Sounds ?? []) + "\n" + elements + "\n" + slots);
         File.WriteAllText(Path.Combine(root, "arc9", "common", "attachments_bulk", className + "_atts.lua"), atts.ToString());
         return root;
     }
 
-    private static string Animations(IReadOnlyDictionary<string, (int Frames, int? MagFrame, string Body)> sequences)
+    private static string Animations(IReadOnlyDictionary<string, (int Frames, int? MagFrame, string Body)> sequences, IReadOnlyCollection<string> resolved)
     {
         var text = new StringBuilder("-------------------------- ANIMATIONS\n\nSWEP.Animations = {\n");
         foreach (var (key, sources) in Keys)
@@ -112,10 +113,11 @@ public static partial class Arc9Lua
             var ik = IkTimeline(body, frames);
             if (ik.Count > 0)
                 text.AppendLine("        IKTimeLine = {\n" + string.Concat(ik.Select(item => $"            {{ t = {Number(item.T)}, lhik = {item.L}, rhik = {item.R} }},\n")) + "        },");
-            // CoD sound aliases have no Gmod soundscript; map them to your own sounds and uncomment.
+            // ARC9 suppresses QC sound events, so foley plays from here. Aliases registered by the generated
+            // lua/autorun/<name>_sounds.lua are live; the rest stay commented until you map them.
             var sounds = SoundEvent().Matches(body).Select(match => (Frame: int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture), Name: match.Groups[2].Value)).ToArray();
             if (sounds.Length > 0)
-                text.AppendLine("        EventTable = {\n" + string.Concat(sounds.Select(item => $"            -- {{s = \"{item.Name}\", t = {Number(item.Frame / Fps)}}},\n")) + "        },");
+                text.AppendLine("        EventTable = {\n" + string.Concat(sounds.Select(item => $"            {(resolved.Contains(item.Name) ? "" : "-- ")}{{s = \"{item.Name}\", t = {Number(item.Frame / Fps)}}},\n")) + "        },");
             text.AppendLine("    },");
         }
         return text.AppendLine("}").ToString();
