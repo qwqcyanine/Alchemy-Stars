@@ -32,6 +32,9 @@
               </Grid>
               <ListBox ItemsSource="{Binding QcAttachments}" SelectedItem="{Binding QcSelectedAttachment, Mode=TwoWay}" Height="160" AutomationProperties.Name="{Binding Text.QcAttachments}" />
             </StackPanel>
+            <StackPanel Tag="ammo" Background="Transparent"><TextBlock Text="{Binding Text.QcAmmoFile}" Classes="field-label" TextWrapping="Wrap" />
+              <Grid ColumnDefinitions="*,Auto"><TextBox Text="{Binding QcAmmoFile}" PlaceholderText="ammo_unspent_9p_LOD0.cast" AutomationProperties.Name="{Binding Text.QcAmmoFile}" />
+                <Button Grid.Column="1" Tag="ammo" Click="BrowseClick" Margin="6,0,0,0" ToolTip.Tip="{Binding Text.QcAmmoFile}" AutomationProperties.Name="{Binding Text.QcAmmoFile}"><local:ThemedIcon Classes="product-icon" Glyph="import-assets" IsHitTestVisible="False" /></Button></Grid></StackPanel>
             <StackPanel Tag="anims" Background="Transparent"><TextBlock Text="{Binding Text.QcAnimationsFolder}" Classes="field-label" />
               <Grid ColumnDefinitions="*,Auto"><TextBox Text="{Binding QcAnimationsFolder}" AutomationProperties.Name="{Binding Text.QcAnimationsFolder}" />
                 <Button Grid.Column="1" Tag="anims" Click="BrowseClick" Margin="6,0,0,0" ToolTip.Tip="{Binding Text.QcAnimationsFolder}" AutomationProperties.Name="{Binding Text.QcAnimationsFolder}"><local:ThemedIcon Classes="product-icon" Glyph="import-assets" IsHitTestVisible="False" /></Button></Grid></StackPanel>

@@ -165,6 +165,7 @@ public static partial class QcProjectGenerator
             var lengths = new Dictionary<string, int> { ["idle"] = Bake(plan, idle, Path.Combine(output, "anims", "idle.smd")) };
             // IronSights only trims the CoD ADS hold pose (aim_offset) onto screen centre.
             var checkpoints = new Dictionary<string, int?>();
+            var magSwaps = new Dictionary<string, int>();
             var basic = new StringBuilder();
             var sequences = new List<string>();
             var sequenceSources = new Dictionary<string, string>();
@@ -178,6 +179,7 @@ public static partial class QcProjectGenerator
                 var name = SequenceName(group.Key)!;
                 if (hip.Key != "idle") lengths[name] = Bake(plan, hip.Value, Path.Combine(output, "anims", hip.Key + ".smd"), basePose: idle);
                 if (LastCheckpoint(hip.Value) is { } checkpoint) checkpoints[name] = checkpoint;
+                if (MagSwapFrame(hip.Value) is { } swap) magSwaps[name] = swap;
                 if (ads.Value is not null) Bake(plan, ads.Value, Path.Combine(output, "anims", ads.Key + ".smd"), basePose: idle);
                 var body = new StringBuilder();
                 body.AppendLine($"\t\"anims/{hip.Key}.smd\"");
@@ -351,7 +353,7 @@ public static partial class QcProjectGenerator
                 var adsUp = Path.Combine(output, "anims", "ads_up.smd");
                 var sight = File.Exists(adsUp) ? SolveSight(Path.Combine(output, "anims", "idle.smd"), adsUp) : null;
                 var arc9Lua = Arc9Lua.Write(output, new(weaponName, $"models/{modelDirectory}v_{weaponName}.mdl", $"models/{modelDirectory}w_{weaponName}.mdl",
-                    groups.Select(group => group.Select(item => (item.Token, RootBone(item.Part.FilePath))).ToArray()).ToArray(), arc9Sequences, sight, request.PrintName.Trim(), sounds?.Aliases.Keys.ToHashSet()));
+                    groups.Select(group => group.Select(item => (item.Token, RootBone(item.Part.FilePath))).ToArray()).ToArray(), arc9Sequences, sight, request.PrintName.Trim(), sounds?.Aliases.Keys.ToHashSet(), BulletBones(plan.Skeleton), magSwaps));
                 return new(viewQc, worldQc, sequences, layers, missing, LuaDirectory: arc9Lua, MaterialLog: materialLog, Sounds: sounds);
             }
             var attachmentDirectory = $"{modelDirectory}attachments/{weaponName}/";
@@ -642,6 +644,20 @@ public static partial class QcProjectGenerator
         .OfType<CurveNode>().Any(curve => string.Equals(curve.NodeName, bone, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>Last "reload checkpoint" frame (mag seated; earlier ones mark mag-out), at 30 fps.</summary>
+    /// <summary>
+    /// When the shown round count flips to the new magazine: halfway between the first checkpoint (old magazine out) and
+    /// the last (new one seated), where the magazine is off the gun. A single checkpoint (tactical) is used as is.
+    /// </summary>
+    private static int? MagSwapFrame(string file)
+    {
+        var animation = CastReader.Load(file).RootNodes.SelectMany(DescendantsAndSelf).OfType<AnimationNode>().FirstOrDefault();
+        if (animation is null) return null;
+        var scale = animation.Framerate > 0 ? Fps / animation.Framerate : 1;
+        var frames = animation.NotificationTracks.Where(track => track.Name.Trim() == "reload checkpoint")
+            .SelectMany(track => Frames(track.KeyFrameBuffer)).ToArray();
+        return frames.Length == 0 ? null : (int)MathF.Round((frames.Min() + frames.Max()) / 2f * scale);
+    }
+
     private static int? LastCheckpoint(string file)
     {
         var animation = CastReader.Load(file).RootNodes.SelectMany(DescendantsAndSelf).OfType<AnimationNode>().FirstOrDefault();
@@ -745,6 +761,19 @@ public static partial class QcProjectGenerator
                 $"$definebone \"{bone.Name}\" \"{parent}\" {Number(p.X)} {Number(p.Y)} {Number(p.Z)} {Number(e.Y)} {Number(e.Z)} {Number(e.X)} 0 0 0 0 0 0"));
         }
         return text.ToString();
+    }
+
+    /// <summary>
+    /// j_ammo_* per magazine bone (j_mag1, j_mag2), zipped by slot so each entry hides one round in both copies: CoD
+    /// animates either copy as "the" magazine (inspect shows j_mag2, reload_empty pulls j_mag1), so both follow the clip.
+    /// </summary>
+    private static IReadOnlyList<string[]> BulletBones(Skeleton skeleton)
+    {
+        var mags = skeleton.Bones
+            .Where(bone => bone.Name!.StartsWith("j_ammo_", StringComparison.OrdinalIgnoreCase) && bone.Parent?.Name?.StartsWith("j_mag", StringComparison.OrdinalIgnoreCase) == true)
+            .GroupBy(bone => bone.Parent!.Name!, StringComparer.OrdinalIgnoreCase).OrderBy(group => group.Key, StringComparer.Ordinal)
+            .Select(group => group.Select(bone => bone.Name!).Order(StringComparer.Ordinal).ToArray()).ToArray();
+        return mags.Length == 0 ? [] : Enumerable.Range(0, mags.Min(names => names.Length)).Select(index => mags.Select(names => names[index]).ToArray()).ToArray();
     }
 
     private static string ValveBipedBones()

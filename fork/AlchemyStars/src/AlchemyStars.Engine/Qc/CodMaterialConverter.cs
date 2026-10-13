@@ -40,6 +40,8 @@ public static class CodMaterialConverter
                     .Where(path => !Path.GetFileName(path).StartsWith('$')).ToArray();
                 var color = material.Albedo is FileNode albedo ? Path.Combine(Path.GetDirectoryName(cast)!, albedo.Path.Replace('\\', '/')) : null;
                 var nog = files.FirstOrDefault(path => IsNog(Path.GetFileNameWithoutExtension(path)));
+                // Hashed exports (ammo_unspent_9p: image_<hash>.png) carry no _n&_g~ name; recognise the NOG by its content.
+                nog ??= files.FirstOrDefault(path => !string.Equals(path, color, StringComparison.OrdinalIgnoreCase) && File.Exists(path) && LooksLikeNog(path));
                 if (color is null || Path.GetFileName(color).StartsWith('$') || !File.Exists(color)) { log.Add($"skip {material.Name}: no colour map"); continue; }
                 materials[material.Name] = (color, nog is not null && File.Exists(nog) ? nog : null);
             }
@@ -58,16 +60,40 @@ public static class CodMaterialConverter
         || name.Contains("_g~", StringComparison.OrdinalIgnoreCase) || name.EndsWith("_nog", StringComparison.OrdinalIgnoreCase)
         || name.Contains("packed_n", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// NOG packs gloss / normal U / AO / normal V: both normal channels average near 0.5 and the AO channel is mostly
+    /// white, while colour maps are rarely balanced that way.
+    /// </summary>
+    private static bool LooksLikeNog(string path)
+    {
+        try
+        {
+            var image = Load(path);
+            double u = 0, v = 0, ao = 0;
+            var step = Math.Max(1, image.W * image.H / 4096);
+            var samples = 0;
+            for (var i = 0; i < image.W * image.H; i += step, samples++)
+            {
+                u += image.P[i * 4 + 1]; ao += image.P[i * 4 + 2]; v += image.P[i * 4 + 3];
+            }
+            u /= samples; v /= samples; ao /= samples;
+            return Math.Abs(u - 128) < 24 && Math.Abs(v - 128) < 24 && ao > 180;
+        }
+        catch (InvalidDataException) { return false; }
+    }
+
     private static string ConvertOne(string name, string colorPath, string? nogPath, string directory, string cdMaterials, VmtEnvmapStyle style, int maxSize)
     {
         var color = Fit(Load(colorPath), maxSize);
-        var fused = Path.GetFileName(colorPath).Contains("_s~", StringComparison.OrdinalIgnoreCase) || Path.GetFileName(colorPath).Contains('&');
+        var fused = Path.GetFileName(colorPath).Contains("_s~", StringComparison.OrdinalIgnoreCase) || Path.GetFileName(colorPath).Contains('&')
+            || HashedFused(colorPath, color);
         var nog = nogPath is null ? null : Resample(Fit(Load(nogPath), maxSize), color.W, color.H);
         var count = color.W * color.H;
         var albedo = new Image(color.W, color.H);
         var normal = new Image(color.W, color.H);
         var exponent = new Image(color.W, color.H);
         double glossSum = 0, tintR = 0, tintG = 0, tintB = 0;
+        var metalPixels = 0;
         for (var i = 0; i < count; i++)
         {
             var o = i * 4;
@@ -89,9 +115,13 @@ public static class CodMaterialConverter
             normal.Set(o, nx * 0.5f + 0.5f, ny * 0.5f + 0.5f, nz * 0.5f + 0.5f, Math.Min(MathF.Pow(gloss, 2.5f) + 1 / 255f, 1) * ao);
             exponent.Set(o, Math.Min(MathF.Pow(gloss, 4) * (1 - 0.5f * metal) + 1 / 255f, 1), metal, 0, gloss * ao);
             glossSum += Math.Max(gloss, 0.5f);
-            if (metal > 0.5f) { tintR += r * metal; tintG += g * metal; tintB += b * metal; }
+            if (metal > 0.5f) { tintR += r * metal; tintG += g * metal; tintB += b * metal; metalPixels++; }
             else { tintR += 0.1; tintG += 0.1; tintB += 0.1; }
         }
+        // $color2 [0 0 0] blacks out masked diffuse, leaving metal to phong + envmap. Fine for a mostly painted gun, but a
+        // mostly-metal part (brass cartridge) turns near black wherever the cubemap is weak; keep half its diffuse.
+        if (metalPixels > count / 2)
+            for (var o = 3; o < albedo.P.Length; o += 4) albedo.P[o] = (byte)(albedo.P[o] / 2);
 
         WriteVtf(Path.Combine(directory, name + "_rgb.vtf"), albedo, Dxt5, EightBitAlpha);
         WriteVtf(Path.Combine(directory, name + "_n.vtf"), normal, Bgra8888, EightBitAlpha | NormalFlag);
@@ -139,6 +169,19 @@ public static class CodMaterialConverter
                 "$envmaptint" "{{tint}}"
             """.Replace("\r\n", "\n") + proxy + "}\n");
         return $"ok   {name} {color.W}x{color.H}{(nog is null ? " (no NOG: flat normal)" : "")}";
+    }
+
+    /// <summary>
+    /// Hashed exports (image_&lt;hash&gt;.png) lose the _c&amp;_s~ name, so fused colour/specular is told by its alpha:
+    /// a metal mask has real insulator areas (ammo_unspent_9p: brass/copper 255, primer/paint 0), while a plain
+    /// colour map stays opaque. Without this the cartridge renders as flat saturated diffuse.
+    /// </summary>
+    private static bool HashedFused(string path, Image color)
+    {
+        if (!Path.GetFileName(path).StartsWith("image_", StringComparison.OrdinalIgnoreCase)) return false;
+        var low = 0;
+        for (var i = 3; i < color.P.Length; i += 4) if (color.P[i] < 128) low++;
+        return low > color.W * color.H / 100;
     }
 
     private sealed class Image(int width, int height)

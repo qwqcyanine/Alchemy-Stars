@@ -14,7 +14,9 @@ public sealed record Arc9Weapon(
     IReadOnlyDictionary<string, (int Frames, int? MagFrame, string Body)> Sequences,
     (System.Numerics.Vector3 Pos, System.Numerics.Vector3 Ang)? Sight = null,
     string PrintName = "",
-    IReadOnlyCollection<string>? Sounds = null);
+    IReadOnlyCollection<string>? Sounds = null,
+    IReadOnlyList<string[]>? BulletBones = null,
+    IReadOnlyDictionary<string, int>? MagSwapFrames = null);
 
 /// <summary>
 /// Writes a standalone ARC9 SWEP (lua/weapons/arc9_&lt;name&gt;.lua, layout of ARC9-COD2019's arc9_cod2019_sm_mp5) and a
@@ -88,12 +90,12 @@ public static partial class Arc9Lua
         slots.AppendLine("}");
 
         File.WriteAllText(Path.Combine(root, "weapons", className + ".lua"),
-            Header(weapon, className) + "\n" + Animations(weapon.Sequences, weapon.Sounds ?? []) + "\n" + elements + "\n" + slots);
+            Header(weapon, className) + "\n" + Animations(weapon.Sequences, weapon.Sounds ?? [], weapon.MagSwapFrames ?? new Dictionary<string, int>()) + "\n" + elements + "\n" + slots);
         File.WriteAllText(Path.Combine(root, "arc9", "common", "attachments_bulk", className + "_atts.lua"), atts.ToString());
         return root;
     }
 
-    private static string Animations(IReadOnlyDictionary<string, (int Frames, int? MagFrame, string Body)> sequences, IReadOnlyCollection<string> resolved)
+    private static string Animations(IReadOnlyDictionary<string, (int Frames, int? MagFrame, string Body)> sequences, IReadOnlyCollection<string> resolved, IReadOnlyDictionary<string, int> magSwaps)
     {
         var text = new StringBuilder("-------------------------- ANIMATIONS\n\nSWEP.Animations = {\n");
         foreach (var (key, sources) in Keys)
@@ -108,6 +110,8 @@ public static partial class Arc9Lua
             {
                 var refill = mag is { } frame ? Math.Clamp(frame / (float)Math.Max(1, frames), 0.05f, 0.95f) : 0.75f;
                 text.AppendLine($"        MinProgress = 0.9,\n        PeekProgress = 0.85,\n        RefillProgress = {Number(refill)},\n        FireASAP = true,");
+                // BulletBones show the old round count until MagSwapTime, then the new magazine's.
+                if (magSwaps.TryGetValue(present[0], out var swap)) text.AppendLine($"        MagSwapTime = {Number(swap / Fps)},");
             }
             else if (key is "ready" or "draw" or "inspect") text.AppendLine("        MinProgress = 0.8,\n        FireASAP = true,");
             var ik = IkTimeline(body, frames);
@@ -162,11 +166,18 @@ public static partial class Arc9Lua
         SWEP.ViewModelFOVBase = 64
         SWEP.Slot = 2
 
-        -- The worldmodel is weapon-only and rooted on ValveBiped.Bip01_R_Hand; tune against a playermodel.
-        SWEP.MirrorVMWM = false
+        -- Third person mirrors the viewmodel on the player's right hand, with TPIK pulling the player's hands onto
+        -- the gun (ARC9-COD2019 setup; the rig matches its c_ models, offsets from arc9_cod2019_sm_mp5).
+        -- w_ is only drawn on the ground.
+        SWEP.MirrorVMWM = true
+        SWEP.MirrorVMWMHeldOnly = true
+        SWEP.NoTPIKVMPos = true
+        SWEP.WorldModelMirror = "{{{weapon.ViewModel}}}"
         SWEP.WorldModelOffset = {
-            Pos = Vector(0, 0, 0),
-            Ang = Angle(0, 0, 0),
+            Pos = Vector(-8, 4, -7.5),
+            Ang = Angle(-5, 0, 180),
+            TPIKPos = Vector(-11.5, 6, -4),
+            TPIKAng = Angle(-12.5, -1, 165),
             Scale = 1,
         }
 
@@ -186,6 +197,7 @@ public static partial class Arc9Lua
         SWEP.ClipSize = 30
         SWEP.SupplyLimit = 6
         SWEP.ReloadInSights = true
+        {{{BulletBones(weapon.BulletBones)}}}
 
         -------------------------- FIREMODES
 
@@ -286,6 +298,14 @@ public static partial class Arc9Lua
         end
 
         """.Replace("\r\n", "\n");
+
+    /// <summary>
+    /// Magazine rounds, one entry per slot across both magazine copies: ARC9 hides index i once fewer than i are loaded.
+    /// The chambered round has no filled bone, so Sub1 drops it from the count.
+    /// </summary>
+    private static string BulletBones(IReadOnlyList<string[]>? bones) => bones is not { Count: > 0 } ? "" :
+        "SWEP.BulletBonesSub1 = true\nSWEP.BulletBones = {\n"
+        + string.Concat(bones.Select((names, index) => $"    [{index + 1}] = {{{string.Join(", ", names.Select(name => $"\"{name}\""))}}},\n")) + "}\n";
 
     // + 0 turns -0 into 0.
     private static string V(float? value) => ((value ?? 0) + 0f).ToString("0.###", CultureInfo.InvariantCulture);

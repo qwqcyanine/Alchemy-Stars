@@ -10,9 +10,18 @@ internal static class QcSmoke
             if (args.Length < 4) throw new ArgumentException("usage: --qc-smoke <models> <anims> <locomotion|-> <output> [both|mwbase|arc9]");
             Check();
             var printName = CheckUi(args[0], args[1], args[3]);
-            var parts = Directory.GetFiles(args[0], "*_LOD0.cast", SearchOption.AllDirectories)
+            IReadOnlyList<ModelPartSpec> parts = Directory.GetFiles(args[0], "*_LOD0.cast", SearchOption.AllDirectories)
+                .Where(path => !QcAmmoFiller.IsAmmo(path))
                 .Select(path => new ModelPartSpec(path, ModelPartClassifier.Classify(path).Kind))
                 .OrderBy(part => part.Kind).ThenBy(part => part.FilePath, StringComparer.OrdinalIgnoreCase).ToArray();
+            var ammoStaging = Path.Combine(Path.GetTempPath(), "AlchemyStarsQcAmmo", Guid.NewGuid().ToString("N"));
+            if (args.SkipWhile(arg => arg != "--ammo").Skip(1).FirstOrDefault() is { } ammo)
+            {
+                var (filled, log) = QcAmmoFiller.FillAsync(new ModelMergerService(), parts, ammo, ammoStaging).GetAwaiter().GetResult();
+                foreach (var line in log) Console.WriteLine("ammo: " + line);
+                if (!log.Any(line => line.StartsWith("ok", StringComparison.Ordinal))) throw new InvalidOperationException("no magazine was filled");
+                parts = filled;
+            }
             var target = args.Length > 4 && !args[4].StartsWith("--", StringComparison.Ordinal) ? Enum.Parse<QcTarget>(args[4], true) : QcTarget.Both;
             var result = QcProjectGenerator.Generate(new(parts, args[1], args[2] == "-" ? "" : args[2], args[3], Target: target, Scale: new(),
                 ConvertMaterials: args.Contains("--materials"), IncludeHands: args.Contains("--hands"), PrintName: printName,
@@ -39,7 +48,7 @@ internal static class QcSmoke
     private static string CheckUi(string models, string animations, string output)
     {
         void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException("QC UI: " + message); }
-        var casts = Directory.GetFiles(models, "*_LOD0.cast", SearchOption.AllDirectories);
+        var casts = Directory.GetFiles(models, "*_LOD0.cast", SearchOption.AllDirectories).Where(path => !QcAmmoFiller.IsAmmo(path)).ToArray();
         var hands = casts.Single(path => ModelPartClassifier.Classify(path).Kind == ModelPartKind.ViewHands);
         var directory = Path.Combine(Path.GetTempPath(), "AlchemyStarsQcUi", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(directory);
@@ -51,6 +60,8 @@ internal static class QcSmoke
             vm.DropQcPaths(casts, null);
             Require(vm.QcHandsFile == hands && File.Exists(vm.QcWeaponFile), "auto-detect missed hands or receiver");
             Require(vm.QcAttachments.Count == casts.Length - 2, $"expected {casts.Length - 2} attachments, got {vm.QcAttachments.Count}");
+            if (casts.Any(path => path.Contains("_mag_", StringComparison.OrdinalIgnoreCase)))
+                Console.WriteLine("ammo guess: " + (vm.QcAmmoFile.Length > 0 ? vm.QcAmmoFile : "(none)"));
             vm.FillQcPrintNameAsync().GetAwaiter().GetResult();
             var printName = vm.QcPrintName;
             Console.WriteLine($"print name: {Path.GetFileName(vm.QcWeaponFile)} -> '{printName}'");
