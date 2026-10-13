@@ -5,6 +5,8 @@ namespace AlchemyStars.Engine;
 
 /// <param name="Groups">Attachment groups (same root bone): token + root bone; the first entry is the default.</param>
 /// <param name="Sequences">Compiled sequence name, frame count at 30 fps, and the 9031 mag-in frame if any.</param>
+/// <param name="Bodygroups">Single-file layout: viewmodel bodygroup name per group (attachments switch it instead of loading a model).</param>
+/// <param name="MagazineRounds">Per magazine token: j_ammo bones (top round first) of the gun's magazine (j_mag1) and the offhand one (j_mag2).</param>
 public sealed record MwBaseWeapon(
     string Name,
     string ViewModel,
@@ -13,7 +15,9 @@ public sealed record MwBaseWeapon(
     IReadOnlyList<(string Token, string Root)[]> Groups,
     IReadOnlyList<(string Name, int Frames, int? MagFrame)> Sequences,
     IReadOnlyList<string> GripLayers,
-    string PrintName = "");
+    string PrintName = "",
+    IReadOnlyList<string>? Bodygroups = null,
+    IReadOnlyDictionary<string, (string[] Current, string[] Reserve)>? MagazineRounds = null);
 
 /// <summary>
 /// Writes a drop-in MW Base (mg_base) SWEP: lua/weapons/mg_&lt;name&gt;/{shared,animations,customization}.lua plus one
@@ -64,17 +68,20 @@ public static class MwBaseLua
         File.WriteAllText(Path.Combine(swep, "animations.lua"), Animations(names));
 
         var slots = new List<string>();
-        foreach (var group in weapon.Groups)
+        foreach (var (group, index) in weapon.Groups.Select((group, index) => (group, index)))
         {
             var classes = new List<string>();
-            foreach (var (token, rootBone) in group)
+            foreach (var ((token, rootBone), value) in group.Select((item, value) => (item, value)))
             {
                 var attClass = $"{className}_{Identifier(token)}";
                 classes.Add(attClass);
                 var baseClass = Bases.GetValueOrDefault(rootBone, "att_base");
+                // Bodygroup value = position in the group (meshes list each part in order, blank last).
+                var visual = weapon.Bodygroups is { } bodygroups
+                    ? $"ATTACHMENT.Bodygroups = {{[\"{bodygroups[index]}\"] = {value}}}\n"
+                    : $"ATTACHMENT.Model = Model(\"{weapon.AttachmentModels}att_{token}.mdl\")\n";
                 File.WriteAllText(Path.Combine(attachments, attClass + ".lua"),
-                    $"ATTACHMENT.Base = \"{baseClass}\"\nATTACHMENT.Name = \"{token}\"\n"
-                    + $"ATTACHMENT.Model = Model(\"{weapon.AttachmentModels}att_{token}.mdl\")\n");
+                    $"ATTACHMENT.Base = \"{baseClass}\"\nATTACHMENT.Name = \"{token}\"\n" + visual + RoundLists(weapon.MagazineRounds is { } rounds && rounds.TryGetValue(token, out var list) ? list : null));
             }
             slots.Add("    {" + string.Join(", ", classes.Select(item => $"\"{item}\"")) + "},");
         }
@@ -82,6 +89,18 @@ public static class MwBaseLua
             "AddCSLuaFile()\n\n-- One table per slot; the first entry is equipped by default.\nSWEP.Customization = {\n"
             + string.Join('\n', slots) + "\n}\n\n--NECESSARY: loads custom attachments from other authors\nrequire(\"mw_utils\")\nmw_utils.LoadInjectors(SWEP)\n");
         return root;
+    }
+
+    /// <summary>
+    /// att_magazine round lists: BulletList keeps the old count until the 9031 ResetBullets event (where j_mag1 turns into
+    /// the new magazine), ReserveBulletList always shows the incoming magazine. Without them every round stays visible.
+    /// </summary>
+    private static string RoundLists((string[] Current, string[] Reserve)? rounds)
+    {
+        if (rounds is not { } lists) return "";
+        static string List(string name, string[] bones) => $"ATTACHMENT.{name} = {{\n"
+            + string.Concat(bones.Select((bone, index) => $"    [{index + 1}] = {{\"{bone}\"}},\n")) + "}\n";
+        return "\n-- round, bone name (top round first)\n" + List("BulletList", lists.Current) + List("ReserveBulletList", lists.Reserve);
     }
 
     private static string Animations(IReadOnlyDictionary<string, (string Name, int Frames, int? MagFrame)> sequences)

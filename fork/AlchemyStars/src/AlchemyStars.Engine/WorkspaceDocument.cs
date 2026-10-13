@@ -88,6 +88,7 @@ public sealed class WorkspaceQcSettings
     public string MaterialsPath { get; set; } = string.Empty;
     public string PrintName { get; set; } = string.Empty;
     public int Target { get; set; }
+    public int MwLayout { get; set; }
     public float WalkScale { get; set; } = 1;
     public float JogScale { get; set; } = 1;
     public float SprintScale { get; set; } = 0.5f;

@@ -25,7 +25,8 @@ internal static class QcSmoke
             var target = args.Length > 4 && !args[4].StartsWith("--", StringComparison.Ordinal) ? Enum.Parse<QcTarget>(args[4], true) : QcTarget.Both;
             var result = QcProjectGenerator.Generate(new(parts, args[1], args[2] == "-" ? "" : args[2], args[3], Target: target, Scale: new(),
                 ConvertMaterials: args.Contains("--materials"), IncludeHands: args.Contains("--hands"), PrintName: printName,
-                SoundDirectory: args.SkipWhile(arg => arg != "--sounds").Skip(1).FirstOrDefault() ?? ""));
+                SoundDirectory: args.SkipWhile(arg => arg != "--sounds").Skip(1).FirstOrDefault() ?? "",
+                MwLayout: args.Contains("--single") ? QcMwLayout.SingleFile : QcMwLayout.Official));
             foreach (var line in result.MaterialLog ?? []) Console.WriteLine("material: " + line);
             Console.WriteLine(result.ViewModelQc);
             Console.WriteLine(result.WorldModelQc);

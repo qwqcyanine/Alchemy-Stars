@@ -28,7 +28,14 @@ public sealed record QcProjectRequest(
     int MaterialMaxSize = 2048,
     bool IncludeHands = false,
     string PrintName = "",
-    string SoundDirectory = "");
+    string SoundDirectory = "",
+    QcMwLayout MwLayout = QcMwLayout.Official);
+
+/// <summary>
+/// MW Base project layout. Official = Source-Files-MW-Public (weapon_viewmodel.qc + includes, attachments as separate
+/// bonemerged models). SingleFile = third-party packs like mw2_dm_sr25 (one v_/w_ QC, attachments as bodygroups).
+/// </summary>
+public enum QcMwLayout { Official, SingleFile }
 
 /// <summary>Amplitude (0..1.5) of shared-locomotion weapon/camera motion per loop family.</summary>
 public sealed record QcLocomotionScale(float Walk = 1, float Jog = 1, float Sprint = 0.5f, float SuperSprint = 0.5f)
@@ -101,9 +108,10 @@ public static partial class QcProjectGenerator
         ["empty_offset"] = "empty",
     };
 
-    private static void LayerSequence(StringBuilder text, string layer, string name, string param) =>
+    // upper > 1 scales the layer down: the parameter tops out at 1, so a_<layer> is never reached at full weight.
+    private static void LayerSequence(StringBuilder text, string layer, string name, string param, float upper = 1) =>
         text.AppendLine($"$sequence \"{name}\" {{").AppendLine($"\ta_{layer}_zero").AppendLine($"\ta_{layer}")
-            .AppendLine("\tblendwidth 2").AppendLine($"\tblend {param} 0 1").AppendLine("\tdelta").AppendLine("\trealtime").AppendLine("}");
+            .AppendLine("\tblendwidth 2").AppendLine($"\tblend {param} 0 {Number(upper)}").AppendLine("\tdelta").AppendLine("\trealtime").AppendLine("}");
 
     // ARC9 picks sequences by name automatically; these duplicate MW Base names under ARC9's.
     // No enter_sights/exit_sights: CoD's ads_up only moves tag_ads, so ARC9 would snap back to hip idle after it.
@@ -151,8 +159,10 @@ public static partial class QcProjectGenerator
             var plan = Plan(defaults);
             var bones = plan.Skeleton.Bones.Select(bone => bone.Name!).ToHashSet(StringComparer.OrdinalIgnoreCase);
             var receiver = Token(weaponStem, weaponStem);
-            // MW Base: v_/w_ carry only the receiver; attachments become separate bonemerged models.
-            var separate = request.Target == QcTarget.MwBase;
+            var mwOnly = request.Target == QcTarget.MwBase;
+            // MW Base official layout: v_/w_ carry only the receiver; attachments become separate bonemerged models.
+            // Single-file layout keeps them as viewmodel bodygroups (SWEP attachments set ATTACHMENT.Bodygroups).
+            var separate = mwOnly && request.MwLayout == QcMwLayout.Official;
             var useMw = request.Target != QcTarget.Arc9;
             var useArc9 = request.Target != QcTarget.MwBase;
             // ARC9-COD2019 drives aim_blend (0 hip, 1 ADS); MW Base drives aim_offset. A blend can follow only one.
@@ -189,7 +199,8 @@ public static partial class QcProjectGenerator
                     body.AppendLine("\t$include \"macros/aim_blend.qc\"");
                 }
                 foreach (var line in Events(hip.Value, name)) body.AppendLine("\t" + line);
-                body.AppendLine("\t$include \"macros/layers.qc\"");
+                // ads_in/ads_out carry the ADS move themselves; aim_offset on top would apply it twice (akilo47 layers_noaim).
+                body.AppendLine(useMw && name is "ads_in" or "ads_out" ? "\t$include \"macros/layers_noaim.qc\"" : "\t$include \"macros/layers.qc\"");
                 body.AppendLine("\t$include \"macros/ik.qc\"");
                 body.AppendLine($"\tfps {Number(Fps)}");
                 body.AppendLine(name == "idle" ? "\tloop" : "\tsnap");
@@ -208,11 +219,36 @@ public static partial class QcProjectGenerator
             {
                 // Weapon clips first; shared locomotion (another gun's rig) only fills gaps.
                 var own = Find(clips, source);
-                var file = own ?? Find(locomotion, source);
+                // MW Base holds ADS only through aim_offset (Ads_In then returns to Idle). Without ads_additive use the
+                // ads_up end pose; a shared ads_additive is the other rig's left arm and has no tag_ads move at all.
+                var adsHold = layer == "aim_offset" && own is null && useMw && clips.ContainsKey("ads_up")
+                    ? Path.Combine(output, "anims", "ads_up.smd") : null;
+                // Super sprint from another rig swings this gun with that rig's pose; without its own clips MW Base just sprints.
+                // MW Base target borrows it like x123 borrows mike4: the whole clip as a delta, hands kept on by ikrule.
+                var file = own ?? adsHold ?? (layer.StartsWith("super_sprint", StringComparison.Ordinal) && !mwOnly ? null : Find(locomotion, source));
                 if (file is null) { missing.Add(layer); continue; }
                 var smd = Path.Combine(output, "anims", layer + ".smd");
                 var text = new StringBuilder();
-                if (own is null)
+                float upper = 1;
+                if (adsHold is not null)
+                {
+                    LastFrame(adsHold, smd);
+                    text.AppendLine($"$animation a_{layer}_zero \"anims/idle.smd\" subtract a_idle_ref 0");
+                    text.AppendLine($"$animation a_{layer} \"anims/{layer}.smd\" subtract a_idle_ref 0");
+                }
+                else if (own is null && mwOnly && loop)
+                {
+                    // The other rig's loop as is, minus its own first frame: only its motion lands on this gun.
+                    // Locomotion scale caps the blend instead (parameter 1 reaches scale of the way to a_<layer>).
+                    var weight = Math.Clamp((request.Scale ?? new()).For(layer), 0, 1);
+                    if (weight <= 0) { missing.Add(layer); continue; }
+                    upper = 1 / weight;
+                    var frames = Bake(plan, file, smd);
+                    text.AppendLine($"$animation a_{layer}_ref \"anims/{layer}.smd\"");
+                    text.AppendLine($"$animation a_{layer}_zero \"anims/{HeldIdle(output, layer, frames)}\" fps {Number(Fps)} subtract a_idle_ref 0");
+                    text.AppendLine($"$animation a_{layer} \"anims/{layer}.smd\" fps {Number(Fps)} subtract a_{layer}_ref 0");
+                }
+                else if (own is null)
                 {
                     // A shared clip's arms grip a different gun. Keep only its weapon/camera motion as a delta,
                     // layer it on this weapon's idle and let the baked IK keep the hands on tag_ik_loc_*.
@@ -247,7 +283,7 @@ public static partial class QcProjectGenerator
                     text.AppendLine($"$animation a_{layer} \"anims/{layer}.smd\" subtract a_idle_ref 0");
                 }
                 text.AppendLine();
-                if (useMw) LayerSequence(text, layer, layer, layer);
+                if (useMw) LayerSequence(text, layer, layer, layer, upper);
                 if (useArc9 && Arc9Params.TryGetValue(layer, out var arc9Param)) LayerSequence(text, layer, "a9_" + layer, arc9Param);
                 File.WriteAllText(Path.Combine(output, "additives", layer + ".qc"), text.ToString());
                 layers.Add(layer);
@@ -255,18 +291,37 @@ public static partial class QcProjectGenerator
 
             // sprint_loop and super_sprint_loop are both driven by MW Base's sprint delta: never stack them.
             var commonLayers = layers.Where(layer => !layer.StartsWith("super_sprint", StringComparison.Ordinal)).ToArray();
+            string? hold = null;
             foreach (var (sequence, source) in Transitions)
             {
                 var own = Find(clips, source);
-                var file = own ?? Find(locomotion, source);
+                var file = own ?? (sequence.StartsWith("super_sprint", StringComparison.Ordinal) && !mwOnly ? null : Find(locomotion, source));
                 if (file is null) continue;
                 var smd = Path.Combine(output, "anims", sequence + ".smd");
-                // Transitions carry the full sprint pose (MW Base drives no sprint_offset); the locomotion scale only tames loops.
-                lengths[sequence] = own is not null ? Bake(plan, own, smd, basePose: idle)
-                    : Bake(plan, idle, smd, [new AnimationLayerSpec(WeaponOnlyDelta(file, false, staging, 1), AnimationLayerKind.Additive)]);
-                var body = new StringBuilder($"\t\"anims/{sequence}.smd\"\n");
-                body.AppendLine(sequence.StartsWith("super_sprint", StringComparison.Ordinal) ? "\t$include \"macros/layers_super.qc\"" : "\t$include \"macros/layers.qc\"");
-                body.AppendLine("\t$include \"macros/ik.qc\"").AppendLine($"\tfps {Number(Fps)}").AppendLine("\tfadein 0.2\n\tfadeout 0.2");
+                var body = new StringBuilder();
+                if (mwOnly)
+                {
+                    // akilo47 sprint_in/sprint_out: a held idle timed to the clip plus the clip as a delta layer. In-transitions
+                    // subtract frame 0 (rest -> pose), out-transitions their last frame (pose -> rest, ends on idle).
+                    var frames = Bake(plan, file, smd);
+                    hold ??= HeldIdle(output, "hold", 2);
+                    var reference = sequence.EndsWith("_out", StringComparison.Ordinal) ? frames - 1 : 0;
+                    basic.AppendLine($"$animation a_{sequence}_ref \"anims/{sequence}.smd\"");
+                    basic.AppendLine($"$sequence \"a_{sequence}\" {{\n\t\"anims/{sequence}.smd\"\n\tsubtract a_{sequence}_ref {reference}\n\tdelta\n\tfps {Number(Fps)}\n}}\n");
+                    body.AppendLine($"\t\"anims/{hold}\"\n\tfps {Number(Fps / Math.Max(1, frames - 1))}\n\taddlayer \"a_{sequence}\"");
+                    lengths[sequence] = frames;
+                }
+                else
+                {
+                    // Transitions carry the full sprint pose (MW Base drives no sprint_offset); the locomotion scale only tames loops.
+                    lengths[sequence] = own is not null ? Bake(plan, own, smd, basePose: idle)
+                        : Bake(plan, idle, smd, [new AnimationLayerSpec(WeaponOnlyDelta(file, false, staging, 1), AnimationLayerKind.Additive)]);
+                    body.AppendLine($"\t\"anims/{sequence}.smd\"");
+                }
+                var super = sequence.StartsWith("super_sprint", StringComparison.Ordinal);
+                body.AppendLine(super ? "\t$include \"macros/layers_super.qc\"" : "\t$include \"macros/layers.qc\"");
+                // Super sprint is one-handed (akilo47 super_sprint_in comments out the lhand rule): keep only the right hand.
+                body.AppendLine(super && mwOnly ? $"\tikrule rhand touch \"{RightIk.TargetBone}\" usesource" : "\t$include \"macros/ik.qc\"").AppendLine(mwOnly ? "" : $"\tfps {Number(Fps)}").AppendLine("\tfadein 0.2\n\tfadeout 0.2");
                 basic.AppendLine($"$sequence \"{sequence}\" {{").Append(body).AppendLine("}").AppendLine();
                 sequences.Add(sequence);
                 sequenceSources[sequence] = body.ToString();
@@ -294,6 +349,7 @@ public static partial class QcProjectGenerator
             File.WriteAllText(Path.Combine(output, "macros", "layers.qc"), AddLayers((useMw ? commonLayers : []).Concat(arc9Layers)));
             File.WriteAllText(Path.Combine(output, "macros", "layers_super.qc"), AddLayers((useMw
                 ? commonLayers.Where(layer => layer != "sprint_loop").Append("super_sprint_loop").Where(layers.Contains) : []).Concat(arc9Layers)));
+            File.WriteAllText(Path.Combine(output, "macros", "layers_noaim.qc"), AddLayers((useMw ? commonLayers.Where(layer => layer != "aim_offset") : []).Concat(arc9Layers)));
             File.WriteAllText(Path.Combine(output, "macros", "aim_blend.qc"), $"blend {aimParam} 0 1\nblendwidth 2\n");
             File.WriteAllText(Path.Combine(output, "macros", "ik.qc"), string.Concat(new[] { RightIk, LeftIk }
                 .Where(chain => bones.Contains(chain.TargetBone))
@@ -320,6 +376,16 @@ public static partial class QcProjectGenerator
                 : CodSoundResolver.Resolve(CodSoundResolver.Aliases(sequenceSources.Values), request.SoundDirectory.Trim(), output, weaponName);
 
             var view = new StringBuilder($"// Generated by Alchemy Stars from CAST assets (target: {request.Target})\n");
+            if (mwOnly)
+            {
+                // Bones that must always be set up (akilo47 bones_weapon.qc): Source skips bones nothing uses, so an
+                // attachment bonemerged onto tag_sight_on2 etc. would read an unset matrix and float off the gun, and the
+                // ikrule touch targets would leave the hands with nothing to reach. All weapon/attachment tags qualify.
+                var keep = groups.SelectMany(group => group).SelectMany(item => Plan([item.Part with { ParentBoneTag = "" }]).Skeleton.Bones.Select(bone => bone.Name!))
+                    .Append(LeftIk.TargetBone).Append(RightIk.TargetBone).Where(bones.Contains)
+                    .Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.Ordinal);
+                File.AppendAllText(Path.Combine(output, "bones.qci"), "\n// Always set up: bonemerge and ikrule targets\n" + string.Concat(keep.Select(name => $"$bonemerge \"{name}\"\n")));
+            }
             view.AppendLine($"$modelname \"{modelDirectory}v_{weaponName}.mdl\"");
             view.AppendLine("$origin 0 0 0 -90");
             view.AppendLine("$include \"meshes.qc\"\n$include \"bones.qci\"\n$include \"bones_chands.qci\"\n$include \"attachments.qc\"");
@@ -344,8 +410,22 @@ public static partial class QcProjectGenerator
             world.AppendLine($"$collisionmodel \"meshes/w_{receiver}.smd\" {{\n\t$mass 5\n}}");
             var worldQc = Path.Combine(output, "weapon_worldmodel.qc");
             File.WriteAllText(worldQc, world.ToString());
+            if (mwOnly && request.MwLayout == QcMwLayout.SingleFile)
+            {
+                // Third-party layout (v_sr25.qc): one self-contained QC per model, so no fragment can be compiled alone.
+                viewQc = Flatten(output, viewQc, Path.Combine(output, $"v_{weaponName}.qc"));
+                worldQc = Flatten(output, worldQc, Path.Combine(output, $"w_{weaponName}.qc"));
+                foreach (var fragment in new[] { "weapon_viewmodel.qc", "weapon_worldmodel.qc", "meshes.qc", "meshes_worldmodel.qc", "bones.qci",
+                    "bones_worldmodel.qci", "bones_chands.qci", "attachments.qc", "attachments_worldmodel.qc", "animations_basic.qc" })
+                    File.Delete(Path.Combine(output, fragment));
+                foreach (var folder in new[] { "additives", "macros" })
+                {
+                    foreach (var fragment in Directory.GetFiles(Path.Combine(output, folder), "*.qc")) File.Delete(fragment);
+                    if (!Directory.EnumerateFileSystemEntries(Path.Combine(output, folder)).Any()) Directory.Delete(Path.Combine(output, folder));
+                }
+            }
 
-            if (!separate)
+            if (!mwOnly)
             {
                 // ARC9 / Both: one combined model, bodygroup attachments driven by AttachmentElements.
                 var arc9Sequences = sequences.ToDictionary(name => name, name => (lengths.GetValueOrDefault(name, 1), checkpoints.GetValueOrDefault(name), sequenceSources[name]));
@@ -357,11 +437,14 @@ public static partial class QcProjectGenerator
                 return new(viewQc, worldQc, sequences, layers, missing, LuaDirectory: arc9Lua, MaterialLog: materialLog, Sounds: sounds);
             }
             var attachmentDirectory = $"{modelDirectory}attachments/{weaponName}/";
-            var attachmentQcs = WriteAttachmentModels(output, staging, groups, attachmentDirectory, common);
+            var attachmentQcs = separate ? WriteAttachmentModels(output, staging, groups, attachmentDirectory, common) : [];
             var lua = MwBaseLua.Write(output, new(weaponName, $"models/{modelDirectory}v_{weaponName}.mdl", $"models/{modelDirectory}w_{weaponName}.mdl",
                 $"models/{attachmentDirectory}", groups.Select(group => group.Select(item => (item.Token, RootBone(item.Part.FilePath))).ToArray()).ToArray(),
                 sequences.Select(name => (name, lengths.GetValueOrDefault(name, 1), checkpoints.GetValueOrDefault(name))).ToArray(),
-                layers.Where(layer => layer.StartsWith("grip_", StringComparison.Ordinal)).ToArray(), request.PrintName.Trim()));
+                layers.Where(layer => layer.StartsWith("grip_", StringComparison.Ordinal)).ToArray(), request.PrintName.Trim(),
+                separate ? null : groups.Select(GroupName).ToArray(),
+                separate ? groups.SelectMany(group => group).Select(item => (item.Token, Rounds: MagazineRounds(item.Part)))
+                    .Where(item => item.Rounds is not null).ToDictionary(item => item.Token, item => item.Rounds!.Value) : null));
             return new(viewQc, worldQc, sequences, layers, missing, attachmentQcs, lua, materialLog, sounds);
         }
         finally
@@ -421,6 +504,8 @@ public static partial class QcProjectGenerator
     {
         var animation = CastReader.Load(file).RootNodes.SelectMany(DescendantsAndSelf).OfType<AnimationNode>().FirstOrDefault();
         var lines = new List<(int Frame, string Line)>();
+        // MW Base ResetBullets flips j_mag1 to the new round count: put it where j_mag1 turns into the new magazine.
+        var reset = animation is not null && sequence.StartsWith("reload", StringComparison.Ordinal) ? MagCutFrame(animation) : null;
         if (sequence.StartsWith("fire", StringComparison.Ordinal))
         {
             lines.Add((0, "{ event 9001 0 \"MuzzleFlash muzzle\" }"));
@@ -433,7 +518,8 @@ public static partial class QcProjectGenerator
             foreach (var (note, frame) in animation.NotificationTracks
                 .SelectMany(track => Frames(track.KeyFrameBuffer).Select(value => (track.Name, Frame: (int)MathF.Round(value * scale))))
                 .OrderBy(item => item.Frame))
-                if (EventLine(note, frame, sequence, ref checkpoint) is { } line) lines.Add((frame, line));
+                if (EventLine(note, frame, sequence, ref checkpoint) is { } line)
+                    lines.Add(reset is { } cut && line.Contains("ResetBullets", StringComparison.Ordinal) ? (cut, $"{{ event 9031 {cut} \"ResetBullets\" }}") : (frame, line));
         }
         return lines.OrderBy(item => item.Frame).Select(item => item.Line);
     }
@@ -504,6 +590,37 @@ public static partial class QcProjectGenerator
             return cache[bone] = parents[bone] < 0 ? local : Mul(World(parents[bone]), local);
         }
         return Mul(Inverse(World(view)), World(sight));
+    }
+
+    /// <summary>Writes <paramref name="qc"/> with every $include replaced by the file's text (recursively, paths relative to the project).</summary>
+    private static string Flatten(string root, string qc, string output)
+    {
+        var text = new StringBuilder();
+        void Append(string file)
+        {
+            foreach (var line in File.ReadLines(file))
+            {
+                var include = IncludeLine().Match(line);
+                if (include.Success) Append(Path.Combine(root, include.Groups[1].Value.Replace('\\', '/')));
+                else text.AppendLine(line);
+            }
+        }
+        Append(qc);
+        File.WriteAllText(output, text.ToString());
+        return output;
+    }
+
+    /// <summary>Bodygroup name of an attachment group: its shortest token's first word (bar_long + bar_short -> bar).</summary>
+    private static string GroupName((ModelPartSpec Part, string Token)[] group) => group.MinBy(item => item.Token.Length).Token.Split('_')[0];
+
+    /// <summary>Writes the last frame of an animation SMD as a one-frame SMD (a held pose).</summary>
+    private static void LastFrame(string source, string output)
+    {
+        var lines = File.ReadAllLines(source);
+        var start = Array.IndexOf(lines, "time 0");
+        var last = Array.FindLastIndex(lines, line => line.StartsWith("time ", StringComparison.Ordinal));
+        var end = Array.FindIndex(lines, last + 1, line => line == "end");
+        File.WriteAllLines(output, lines[..start].Append("time 0").Concat(lines[(last + 1)..end]).Append("end"));
     }
 
     /// <summary>
@@ -658,6 +775,52 @@ public static partial class QcProjectGenerator
         return frames.Length == 0 ? null : (int)MathF.Round((frames.Min() + frames.Max()) / 2f * scale);
     }
 
+    /// <summary>
+    /// Frame (30 fps) where j_mag1 becomes the new magazine: the biggest isolated jump of j_mag1 between the first and last
+    /// reload checkpoint (single checkpoint: to the end) that does not land in the far park spot. Measured on pmike: tactical
+    /// reload f62 (park -> seat), reload_empty f21 (hand -> hand), fast f19. Null without checkpoints or j_mag1 curves.
+    /// </summary>
+    private static int? MagCutFrame(AnimationNode animation)
+    {
+        var checkpoints = animation.NotificationTracks.Where(track => track.Name.Trim() == "reload checkpoint")
+            .SelectMany(track => Frames(track.KeyFrameBuffer)).ToArray();
+        var axes = animation.Children.OfType<CurveNode>()
+            .Where(curve => string.Equals(curve.NodeName, "j_mag1", StringComparison.OrdinalIgnoreCase)
+                && curve.KeyPropertyName is "tx" or "ty" or "tz" && curve.KeyValueBuffer is CastArrayProperty<float> { Values.Count: > 0 })
+            .ToDictionary(curve => curve.KeyPropertyName!, curve => (Keys: Frames(curve.KeyFrameBuffer).ToArray(), Values: ((CastArrayProperty<float>)curve.KeyValueBuffer!).Values));
+        if (checkpoints.Length == 0 || axes.Count == 0) return null;
+        static float Sample(float[] keys, IReadOnlyList<float> values, int frame)
+        {
+            var count = Math.Min(keys.Length, values.Count);
+            if (count == 0) return 0;
+            if (frame <= keys[0]) return values[0];
+            for (var i = 1; i < count; i++)
+                if (frame <= keys[i])
+                    return keys[i] == keys[i - 1] ? values[i] : values[i - 1] + (values[i] - values[i - 1]) * (frame - keys[i - 1]) / (keys[i] - keys[i - 1]);
+            return values[count - 1];
+        }
+        var last = (int)axes.Values.Max(axis => axis.Keys.Length > 0 ? axis.Keys[^1] : 0);
+        var path = Enumerable.Range(0, last + 1).Select(frame => new Vector3(
+            axes.TryGetValue("tx", out var x) ? Sample(x.Keys, x.Values, frame) : 0,
+            axes.TryGetValue("ty", out var y) ? Sample(y.Keys, y.Values, frame) : 0,
+            axes.TryGetValue("tz", out var z) ? Sample(z.Keys, z.Values, frame) : 0)).ToArray();
+        float Step(int frame) => frame < 1 || frame > last ? 0 : Vector3.Distance(path[frame], path[frame - 1]);
+        // Parked copies sit far below the gun (~61 in on pmike); hand positions stay well inside that.
+        var reach = path.Max(point => Vector3.Distance(point, path[0]));
+        var from = Math.Max(1, (int)checkpoints.Min());
+        var to = checkpoints.Length > 1 ? Math.Min(last, (int)checkpoints.Max()) : last;
+        int? best = null;
+        var score = 0f;
+        for (var frame = from; frame <= to; frame++)
+        {
+            var jump = Step(frame) - MathF.Max(Step(frame - 1), Step(frame + 1));
+            if (jump <= score || Vector3.Distance(path[frame], path[0]) >= 0.8f * reach) continue;
+            (best, score) = (frame, jump);
+        }
+        var scale = animation.Framerate > 0 ? Fps / animation.Framerate : 1;
+        return best is { } cut ? (int)MathF.Round(cut * scale) : null;
+    }
+
     private static int? LastCheckpoint(string file)
     {
         var animation = CastReader.Load(file).RootNodes.SelectMany(DescendantsAndSelf).OfType<AnimationNode>().FirstOrDefault();
@@ -729,7 +892,7 @@ public static partial class QcProjectGenerator
         }
         foreach (var group in receiverOnly ? [] : groups)
         {
-            var header = $"$bodygroup \"{group.MinBy(item => item.Token.Length).Token.Split('_')[0]}\"\n{{\n";
+            var header = $"$bodygroup \"{GroupName(group)}\"\n{{\n";
             view.Append(header);
             world.Append(header);
             foreach (var (part, token) in group)
@@ -774,6 +937,19 @@ public static partial class QcProjectGenerator
             .GroupBy(bone => bone.Parent!.Name!, StringComparer.OrdinalIgnoreCase).OrderBy(group => group.Key, StringComparer.Ordinal)
             .Select(group => group.Select(bone => bone.Name!).Order(StringComparer.Ordinal).ToArray()).ToArray();
         return mags.Length == 0 ? [] : Enumerable.Range(0, mags.Min(names => names.Length)).Select(index => mags.Select(names => names[index]).ToArray()).ToArray();
+    }
+
+    /// <summary>
+    /// MW Base att_magazine round lists of one magazine part, top round first: BulletList = j_mag1 (the gun's magazine,
+    /// frozen at the old count until ResetBullets), ReserveBulletList = j_mag2 (the offhand new one). Null without rounds.
+    /// </summary>
+    private static (string[] Current, string[] Reserve)? MagazineRounds(ModelPartSpec part)
+    {
+        string[] Rounds(string mag) => Plan([part with { ParentBoneTag = "" }]).Skeleton.Bones
+            .Where(bone => bone.Name!.StartsWith("j_ammo_", StringComparison.OrdinalIgnoreCase) && string.Equals(bone.Parent?.Name, mag, StringComparison.OrdinalIgnoreCase))
+            .Select(bone => bone.Name!).Order(StringComparer.Ordinal).ToArray();
+        var current = Rounds("j_mag1");
+        return current.Length == 0 ? null : (current, Rounds("j_mag2"));
     }
 
     private static string ValveBipedBones()
@@ -849,4 +1025,5 @@ public static partial class QcProjectGenerator
     [GeneratedRegex("^ik_(in|out)_start_(left|right)_hand$")] private static partial Regex IkHand();
     [GeneratedRegex("^viewmodel_(small|medium|large)$")] private static partial Regex Rattle();
     [GeneratedRegex("\\$definebone \"([^\"]+)\"")] private static partial Regex DefineBoneName();
+    [GeneratedRegex("^\\s*\\$include\\s+\"([^\"]+)\"")] private static partial Regex IncludeLine();
 }

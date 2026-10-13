@@ -18,6 +18,8 @@
             <StackPanel><TextBlock Text="{Binding Text.QcTarget}" Classes="field-label" />
               <ComboBox HorizontalAlignment="Stretch" ItemsSource="{Binding QcTargetOptions}" SelectedIndex="{Binding QcTargetIndex, Mode=TwoWay}" AutomationProperties.Name="{Binding Text.QcTarget}" />
               <TextBlock Text="{Binding QcTargetHelp}" Classes="muted" TextWrapping="Wrap" Margin="0,4,0,0" /></StackPanel>
+            <StackPanel IsVisible="{Binding QcIsMwBase}"><TextBlock Text="{Binding Text.QcMwLayout}" Classes="field-label" />
+              <ComboBox HorizontalAlignment="Stretch" ItemsSource="{Binding QcMwLayoutOptions}" SelectedIndex="{Binding QcMwLayoutIndex, Mode=TwoWay}" AutomationProperties.Name="{Binding Text.QcMwLayout}" /></StackPanel>
             <StackPanel Tag="hands" Background="Transparent"><TextBlock Text="{Binding Text.QcHandsFile}" Classes="field-label" />
               <Grid ColumnDefinitions="*,Auto"><TextBox Text="{Binding QcHandsFile}" AutomationProperties.Name="{Binding Text.QcHandsFile}" />
                 <Button Grid.Column="1" Tag="hands" Click="BrowseClick" Margin="6,0,0,0" ToolTip.Tip="{Binding Text.QcHandsFile}" AutomationProperties.Name="{Binding Text.QcHandsFile}"><local:ThemedIcon Classes="product-icon" Glyph="import-assets" IsHitTestVisible="False" /></Button></Grid></StackPanel>

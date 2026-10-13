@@ -25,7 +25,11 @@ public sealed partial class MainWindowViewModel
     public string QcLog { get => qcLog; private set { qcLog = value; OnPropertyChanged(); } }
     private int qcTargetIndex;
     public string[] QcTargetOptions => [Text.QcTargetBoth, "MW Base (Modern Wokefare)", "ARC9"];
-    public int QcTargetIndex { get => qcTargetIndex; set { qcTargetIndex = Math.Clamp(value, 0, 2); OnPropertyChanged(); OnPropertyChanged(nameof(QcTargetHelp)); } }
+    public int QcTargetIndex { get => qcTargetIndex; set { qcTargetIndex = Math.Clamp(value, 0, 2); OnPropertyChanged(); OnPropertyChanged(nameof(QcTargetHelp)); OnPropertyChanged(nameof(QcIsMwBase)); } }
+    private int qcMwLayoutIndex;
+    public bool QcIsMwBase => qcTargetIndex == 1;
+    public string[] QcMwLayoutOptions => [Text.QcMwLayoutOfficial, Text.QcMwLayoutSingle];
+    public int QcMwLayoutIndex { get => qcMwLayoutIndex; set { qcMwLayoutIndex = Math.Clamp(value, 0, 1); OnPropertyChanged(); } }
     private double qcWalkScale = 1, qcJogScale = 1, qcSprintScale = 0.5, qcSuperSprintScale = 0.5;
     private bool qcConvertMaterials = true;
     private bool qcIncludeHands;
@@ -139,7 +143,7 @@ public sealed partial class MainWindowViewModel
     {
         HandsFile = QcHandsFile, WeaponFile = QcWeaponFile, Attachments = [.. QcAttachments],
         AnimationsFolder = QcAnimationsFolder, LocomotionFolder = QcLocomotionFolder, SoundsFolder = QcSoundsFolder, AmmoFile = QcAmmoFile, OutputFolder = QcOutputFolder,
-        ModelPath = QcModelName, MaterialsPath = QcMaterialsPath, PrintName = QcPrintName, Target = QcTargetIndex,
+        ModelPath = QcModelName, MaterialsPath = QcMaterialsPath, PrintName = QcPrintName, Target = QcTargetIndex, MwLayout = QcMwLayoutIndex,
         WalkScale = (float)QcWalkScale, JogScale = (float)QcJogScale, SprintScale = (float)QcSprintScale, SuperSprintScale = (float)QcSuperSprintScale,
         ConvertMaterials = QcConvertMaterials, MaterialMaxSize = QcMaterialSizes[QcMaterialSizeIndex], IncludeHands = QcIncludeHands,
     };
@@ -154,7 +158,7 @@ public sealed partial class MainWindowViewModel
         QcAttachments.Clear();
         foreach (var file in qc.Attachments ?? []) QcAttachments.Add(file);
         QcAnimationsFolder = qc.AnimationsFolder; QcLocomotionFolder = qc.LocomotionFolder; QcSoundsFolder = qc.SoundsFolder ?? ""; QcOutputFolder = qc.OutputFolder;
-        QcModelName = qc.ModelPath; QcMaterialsPath = qc.MaterialsPath; QcTargetIndex = qc.Target;
+        QcModelName = qc.ModelPath; QcMaterialsPath = qc.MaterialsPath; QcTargetIndex = qc.Target; QcMwLayoutIndex = qc.MwLayout;
         QcWalkScale = qc.WalkScale; QcJogScale = qc.JogScale; QcSprintScale = qc.SprintScale; QcSuperSprintScale = qc.SuperSprintScale;
         QcConvertMaterials = qc.ConvertMaterials; QcIncludeHands = qc.IncludeHands; QcMaterialSizeIndex = Math.Max(0, Array.IndexOf(QcMaterialSizes, qc.MaterialMaxSize));
         QcLog = "";
@@ -185,7 +189,7 @@ public sealed partial class MainWindowViewModel
             }
             var request = new QcProjectRequest(parts, QcAnimationsFolder, QcLocomotionFolder, QcOutputFolder, QcModelName.Trim(), QcMaterialsPath.Trim(), (QcTarget)QcTargetIndex,
                 new QcLocomotionScale((float)QcWalkScale, (float)QcJogScale, (float)QcSprintScale, (float)QcSuperSprintScale),
-                QcConvertMaterials, QcMaterialSizes[QcMaterialSizeIndex], QcIncludeHands, QcPrintName.Trim(), QcSoundsFolder.Trim());
+                QcConvertMaterials, QcMaterialSizes[QcMaterialSizeIndex], QcIncludeHands, QcPrintName.Trim(), QcSoundsFolder.Trim(), (QcMwLayout)QcMwLayoutIndex);
             QcProjectResult result;
             try { result = await Task.Run(() => QcProjectGenerator.Generate(request)); }
             finally { try { if (Directory.Exists(ammoStaging)) Directory.Delete(ammoStaging, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
@@ -221,6 +225,9 @@ public sealed partial class UiText
     public string QcTargetBothHelp => L("同时写入 MW Base 的姿态参数叠加层与 ARC9 序列名（ready / enter_sights / idle_sprint 等），一个模型两个 Base 都能用。", "Writes MW Base pose-parameter layers and ARC9 sequence names (ready / enter_sights / idle_sprint…), so one model works on both bases.");
     public string QcTargetMwHelp => L("仅 MW Base：jog/walk/sprint/aim_offset 等 poseparameter 叠加层与 5004/9011/9021/9031 事件，不写 ARC9 别名序列。", "MW Base only: jog/walk/sprint/aim_offset pose-parameter layers and 5004/9011/9021/9031 events, no ARC9 alias sequences.");
     public string QcTargetArc9Help => L("仅 ARC9：QCA 1 枪口 / 2 抛壳 / 4 镜头，ARC9 命名序列；不写 MW Base 叠加层（ARC9 自己做程序化晃动）。", "ARC9 only: QCA 1 muzzle / 2 shell / 4 camera and ARC9-named sequences; no MW Base layers (ARC9 sways procedurally).");
+    public string QcMwLayout => L("MW Base 工程布局", "MW Base project layout");
+    public string QcMwLayoutOfficial => L("官方（Source-Files-MW-Public：weapon_viewmodel.qc + 分文件，配件为独立 bonemerge 模型）", "Official (Source-Files-MW-Public: weapon_viewmodel.qc + includes, attachments as bonemerged models)");
+    public string QcMwLayoutSingle => L("单文件（第三方 v_xxx.qc，配件为 bodygroup）", "Single file (third-party v_xxx.qc, attachments as bodygroups)");
     public string QcNavigation => L("QC 生成", "QC generator");
     public string QcHelp => L("从 CAST 模型与动画生成 Source 引擎视角模型 + 世界模型 QC 工程（含 SMD），兼容 MW Base 与 ARC9。手动选择手臂、武器主体与附件；同一挂点的多个附件会归入同一 bodygroup。", "Generate Source viewmodel + worldmodel QC projects with SMDs from CAST models and animations, compatible with MW Base and ARC9. Pick the view hands, receiver and attachments; attachments on the same mount share one bodygroup.");
     public string QcHandsFile => L("手臂 CAST", "View hands CAST");
