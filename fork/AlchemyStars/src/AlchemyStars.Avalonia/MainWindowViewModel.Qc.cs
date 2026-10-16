@@ -57,7 +57,7 @@ public sealed partial class MainWindowViewModel
             var files = await picker.PickFilesAsync(FilePickerPurpose.ModelPart, field == "attachments");
             if (files.Count == 0) return;
             if (field == "hands") QcHandsFile = files[0];
-            else if (field == "weapon") QcWeaponFile = files[0];
+            else if (field == "weapon") SetQcWeapon(files[0]);
             else if (field == "ammo") QcAmmoFile = files[0];
             else AddQcAttachments(files);
             return;
@@ -87,7 +87,7 @@ public sealed partial class MainWindowViewModel
         switch (field)
         {
             case "hands" when casts.Length > 0: QcHandsFile = casts[0]; return;
-            case "weapon" when casts.Length > 0: QcWeaponFile = casts[0]; return;
+            case "weapon" when casts.Length > 0: SetQcWeapon(casts[0]); return;
             case "ammo" when casts.Length > 0: QcAmmoFile = casts[0]; return;
             case "attachments": AddQcAttachments(casts); return;
             case "anims" when paths.Count > 0: QcAnimationsFolder = Folder(paths[0]); return;
@@ -108,11 +108,28 @@ public sealed partial class MainWindowViewModel
             switch (classification.Kind)
             {
                 case ModelPartKind.ViewHands: QcHandsFile = path; break;
-                case ModelPartKind.Weapon when string.IsNullOrWhiteSpace(QcWeaponFile) || !File.Exists(QcWeaponFile): QcWeaponFile = path; break;
+                case ModelPartKind.Weapon when string.IsNullOrWhiteSpace(QcWeaponFile) || !File.Exists(QcWeaponFile): SetQcWeapon(path); break;
                 default: AddQcAttachments([path]); break;
             }
         }
         if (unrecognized > 0) FooterStatus = Text.QcDropIgnored;
+    }
+
+    /// <summary>
+    /// Sets the receiver picked or dropped by the user and adds the same weapon's other exported parts
+    /// (QcAttachments.Siblings: vm_jup_jp03_sm_pmike_* next to vm_jup_jp03_sm_pmike_rec_000). Removed parts stay removed
+    /// until the receiver is set again. Project loading assigns QcWeaponFile directly, so saved lists are kept as is.
+    /// </summary>
+    private void SetQcWeapon(string path)
+    {
+        QcWeaponFile = path;
+        IReadOnlyList<string> siblings;
+        try { siblings = AlchemyStars.Engine.QcAttachments.Siblings(path); }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException) { return; }
+        var before = QcAttachments.Count;
+        AddQcAttachments(siblings);
+        if (QcAttachments.Count > before)
+            FooterStatus = string.Format(System.Globalization.CultureInfo.CurrentCulture, Text.QcAttachmentsFound, QcAttachments.Count - before);
     }
 
     private void AddQcAttachments(IEnumerable<string> files)
@@ -197,6 +214,7 @@ public sealed partial class MainWindowViewModel
                 + $"{Text.QcLayers} ({result.Layers.Count}): {string.Join(", ", result.Layers)}"
                 + (result.MissingLayers.Count == 0 ? "" : $"\n\n{Text.QcMissingLayers}: {string.Join(", ", result.MissingLayers)}")
                 + (result.AttachmentQcs is { Count: > 0 } atts ? $"\n\n{Text.QcAttachmentModels} ({atts.Count}):\n{string.Join("\n", atts)}" : "")
+                + (result.Notes is { Count: > 0 } notes ? "\n\n" + string.Join("\n", notes) : "")
                 + (result.Sounds is { } sounds
                     ? $"\n\n{Text.QcSounds} ({sounds.Aliases.Count}/{sounds.Aliases.Count + sounds.Missing.Count})" + (sounds.SoundScript is { } script ? $": {script}" : "")
                         + (sounds.Missing.Count == 0 ? "" : $"\n{Text.QcMissingSounds} ({sounds.Missing.Count}):\n{string.Join("\n", sounds.Missing)}")
@@ -248,6 +266,7 @@ public sealed partial class UiText
     public string QcModelName => L("模型路径（生成 v_/w_，留空自动）", "Model path (writes v_/w_, blank = automatic)");
     public string QcPrintName => L("武器显示名（SWEP.PrintName，选择武器主体后按代号自动从 COD 武器库填入）", "Weapon display name (SWEP.PrintName, auto-filled from the COD weapon database by the receiver codename)");
     public string QcPrintNameMatched => L("COD 武器库匹配：{0}（{1} · {2}）", "COD weapon database match: {0} ({1} · {2})");
+    public string QcAttachmentsFound => L("已自动添加同一武器的 {0} 个附件，可在列表中移除不需要的", "Added {0} attachments of the same weapon; remove any you do not want from the list");
     public string QcMaterialsPath => L("$cdmaterials（留空自动）", "$cdmaterials (blank = automatic)");
     public string QcGenerate => L("生成 QC", "Generate QC");
     public string QcGenerating => L("正在生成 QC 与 SMD…", "Generating QC and SMDs…");

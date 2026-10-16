@@ -7,8 +7,9 @@ internal static class QcSmoke
     {
         try
         {
-            if (args.Length < 4) throw new ArgumentException("usage: --qc-smoke <models> <anims> <locomotion|-> <output> [both|mwbase|arc9]");
             Check();
+            if (args.Length == 3 && args[0] == "--project") return RunProject(args[1], args[2]);
+            if (args.Length < 4) throw new ArgumentException("usage: --qc-smoke <models> <anims> <locomotion|-> <output> [both|mwbase|arc9], or --qc-smoke --project <aprj> <output>");
             var printName = CheckUi(args[0], args[1], args[3]);
             IReadOnlyList<ModelPartSpec> parts = Directory.GetFiles(args[0], "*_LOD0.cast", SearchOption.AllDirectories)
                 .Where(path => !QcAmmoFiller.IsAmmo(path))
@@ -33,6 +34,7 @@ internal static class QcSmoke
             Console.WriteLine("sequences: " + string.Join(' ', result.Sequences));
             Console.WriteLine("layers: " + string.Join(' ', result.Layers));
             Console.WriteLine("missing: " + string.Join(' ', result.MissingLayers));
+            foreach (var note in result.Notes ?? []) Console.WriteLine("note: " + note);
             foreach (var qc in result.AttachmentQcs ?? []) Console.WriteLine("attachment: " + qc);
             if (result.LuaDirectory is not null) Console.WriteLine("lua: " + result.LuaDirectory);
             if (result.Sounds is { } sounds)
@@ -43,6 +45,29 @@ internal static class QcSmoke
             return result.Sequences.Contains("idle") ? 0 : 1;
         }
         catch (Exception error) { Console.Error.WriteLine(error); return 1; }
+    }
+
+    /// <summary>Exercises the same saved inputs and ammunition-fill path as the QC page, without overwriting its output.</summary>
+    private static int RunProject(string project, string output)
+    {
+        output = Path.GetFullPath(output);
+        if (Directory.Exists(output) && Directory.EnumerateFileSystemEntries(output).Any())
+            throw new IOException("Project smoke requires a new or empty output directory: " + output);
+        var directory = Path.Combine(Path.GetTempPath(), "AlchemyStarsQcProject", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory);
+        try
+        {
+            using var vm = new MainWindowViewModel(new AnimationExportEngine(), new WorkspaceProjectStore(),
+                new ApplicationPreferencesStore(Path.Combine(directory, "settings.json")), new NullPicker());
+            vm.LoadProject(project);
+            vm.QcOutputFolder = output;
+            vm.GenerateQcAsync().GetAwaiter().GetResult();
+            if (string.IsNullOrWhiteSpace(vm.QcLog))
+                throw new InvalidOperationException("QC project generation failed: " + vm.FooterStatus);
+            Console.WriteLine(vm.QcLog);
+            return 0;
+        }
+        finally { Directory.Delete(directory, true); }
     }
 
     /// <summary>Drag-drop routing and project save/load round-trip of the QC page inputs.</summary>
@@ -61,6 +86,12 @@ internal static class QcSmoke
             vm.DropQcPaths(casts, null);
             Require(vm.QcHandsFile == hands && File.Exists(vm.QcWeaponFile), "auto-detect missed hands or receiver");
             Require(vm.QcAttachments.Count == casts.Length - 2, $"expected {casts.Length - 2} attachments, got {vm.QcAttachments.Count}");
+            // Dropping only the receiver finds the same weapon's other exported parts next to it.
+            using (var single = new MainWindowViewModel(new AnimationExportEngine(), store, preferences, new NullPicker()))
+            {
+                single.DropQcPaths([vm.QcWeaponFile], "weapon");
+                Require(single.QcAttachments.Count == casts.Length - 2, $"sibling discovery found {single.QcAttachments.Count} of {casts.Length - 2} parts");
+            }
             if (casts.Any(path => path.Contains("_mag_", StringComparison.OrdinalIgnoreCase)))
                 Console.WriteLine("ammo guess: " + (vm.QcAmmoFile.Length > 0 ? vm.QcAmmoFile : "(none)"));
             vm.FillQcPrintNameAsync().GetAwaiter().GetResult();
@@ -119,6 +150,23 @@ internal static class QcSmoke
         Is(QcProjectGenerator.EventLine("ik_in_start_right_hand", 9, "reload", ref seen), "{ event 9021 9 \"1\" }");
         Is(QcProjectGenerator.EventLine("reload checkpoint", 30, "reload", ref seen), "{ event 9031 30 \"ResetBullets\" }");
         Is(QcProjectGenerator.EventLine("reload checkpoint", 40, "reload", ref seen), null);
+        // Attachment slots: default part from the names, capacity, smag/xmag variant.
+        string Order(params string[] tokens) => string.Join(",", QcAttachments.DefaultFirst(tokens, token => token, out var empty)) + (empty ? "|empty" : "");
+        Is(Order("barsil", "bar", "bar_hvylong", "bar_long"), "bar,barsil,bar_hvylong,bar_long");
+        Is(Order("mag_20_9p", "mag_30_9p", "mag_50_9p"), "mag_30_9p,mag_20_9p,mag_50_9p");
+        Is(Order("stockno", "stock", "stock_ass"), "stock,stockno,stock_ass");
+        Is(Order("pgrip_aim", "pgrip_ass", "pgrip_tac"), "pgrip_aim,pgrip_ass,pgrip_tac|empty");
+        Is(Order("pgrip_aim"), "pgrip_aim");
+        Is(QcAttachments.Capacity("mag_50_9p")?.ToString(), "50");
+        Is(QcAttachments.Capacity("magazine")?.ToString(), null);
+        Is(CodFireSound.Token("vm_jup_jp03_sm_pmike_rec_000_LOD0.cast"), "sm_pmike");
+        Is(CodFireSound.Token("vm_ar_akilo47_receiver"), "ar_akilo47");
+        Is(QcAttachments.MagVariant(20, 30), "smag");
+        Is(QcAttachments.MagVariant(50, 30), "xmag");
+        Is(QcAttachments.MagVariant(30, 30), null);
+        Is(QcAttachments.VariantOf("wfoly_plr_sm_pmike_inspect_xmag_03"), "xmag");
+        Is(QcAttachments.VariantOf("reload_empty_fast_smag"), "smag");
+        Is(QcAttachments.VariantOf("wfoly_plr_sm_pmike_inspect_03"), "");
         // 48 kHz PCM16 (Source rejects it) is resampled to 44.1 kHz; 44.1 kHz input is left alone.
         static byte[] Wav(int rate, int frames)
         {

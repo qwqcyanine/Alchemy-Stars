@@ -17,7 +17,12 @@ public sealed record MwBaseWeapon(
     IReadOnlyList<string> GripLayers,
     string PrintName = "",
     IReadOnlyList<string>? Bodygroups = null,
-    IReadOnlyDictionary<string, (string[] Current, string[] Reserve)>? MagazineRounds = null);
+    IReadOnlyDictionary<string, (string[] Current, string[] Reserve)>? MagazineRounds = null,
+    IReadOnlyList<bool>? EmptyDefaults = null,
+    IReadOnlySet<string>? Suppressed = null,
+    CodFireSet? Fire = null,
+    IReadOnlySet<string>? Mounts = null,
+    IReadOnlyDictionary<string, HashSet<string>>? BarrelMounts = null);
 
 /// <summary>
 /// Writes a drop-in MW Base (mg_base) SWEP: lua/weapons/mg_&lt;name&gt;/{shared,animations,customization}.lua plus one
@@ -39,11 +44,16 @@ public static class MwBaseLua
         ("Sprint_In", ["sprint_in"]), ("Sprint_Out", ["sprint_out"]),
         ("Super_Sprint_In", ["super_sprint_in"]), ("Super_Sprint_Out", ["super_sprint_out"]),
         ("Firemode_Auto", ["semi_off"]), ("Firemode_Semi", ["semi_on"]),
-        ("Inspect", ["inspect"]), ("Inspect_Empty", ["inspect_empty", "inspect"]),
+        // No inspect fallback for Inspect_Empty: task_inspect plays Inspect when it is nil, and a copy of the plain clip
+        // would bypass the magazine's Inspect = Inspect_Xmag swap (empty gun with a 50 mag inspected the 30 mag).
+        ("Inspect", ["inspect"]), ("Inspect_Empty", ["inspect_empty"]),
         ("Jog_Out", ["jog_out"]), ("Land", ["jog_out"]),
         ("Melee", ["melee_miss_01", "melee_miss_02", "melee_miss_03"]),
         ("Melee_Hit", ["melee_hit_01", "melee_hit_02", "melee_hit_03"]),
     ];
+
+    // Magazine variants CoD ships per reload/inspect clip (reload_smag, inspect_xmag): MW Base key suffix per variant.
+    private static readonly (string Variant, string Suffix)[] MagVariants = [("smag", "_Smag"), ("xmag", "_Xmag")];
 
     // Root bone of an attachment part -> MW Base base class (category).
     private static readonly Dictionary<string, string> Bases = new(StringComparer.OrdinalIgnoreCase)
@@ -64,13 +74,25 @@ public static class MwBaseLua
         Directory.CreateDirectory(attachments);
         var names = weapon.Sequences.ToDictionary(item => item.Name, StringComparer.OrdinalIgnoreCase);
 
-        File.WriteAllText(Path.Combine(swep, "shared.lua"), Shared(weapon, className));
-        File.WriteAllText(Path.Combine(swep, "animations.lua"), Animations(names));
+        LuaFile.Write(Path.Combine(swep, "shared.lua"), Shared(weapon, className));
+        LuaFile.Write(Path.Combine(swep, "animations.lua"), Animations(names));
 
+        // Magazine capacity and smag/xmag reloads come from the part names (mag_20_9p vs the default mag_30_9p).
+        var defaultMag = weapon.Groups.Select(group => QcAttachments.Capacity(group[0].Token)).FirstOrDefault(rounds => rounds is not null);
         var slots = new List<string>();
         foreach (var (group, index) in weapon.Groups.Select((group, index) => (group, index)))
         {
             var classes = new List<string>();
+            if (weapon.EmptyDefaults?[index] == true)
+            {
+                // Optional extras (grip tapes): a model-less first entry keeps the slot empty by default.
+                var none = $"{className}_no_{Identifier(QcAttachments.SlotName(group.Select(item => item.Token)))}";
+                classes.Add(none);
+                // Single-file: the group's blank bodygroup comes after its parts.
+                var blank = weapon.Bodygroups is { } groups ? $"ATTACHMENT.Bodygroups = {{[\"{groups[index]}\"] = {group.Length}}}\n" : "";
+                LuaFile.Write(AttachmentFile(attachments, Bases.GetValueOrDefault(group[0].Root, "att_base"), none),
+                    $"ATTACHMENT.Base = \"{Bases.GetValueOrDefault(group[0].Root, "att_base")}\"\nATTACHMENT.Name = \"None\"\n" + blank);
+            }
             foreach (var ((token, rootBone), value) in group.Select((item, value) => (item, value)))
             {
                 var attClass = $"{className}_{Identifier(token)}";
@@ -80,16 +102,43 @@ public static class MwBaseLua
                 var visual = weapon.Bodygroups is { } bodygroups
                     ? $"ATTACHMENT.Bodygroups = {{[\"{bodygroups[index]}\"] = {value}}}\n"
                     : $"ATTACHMENT.Model = Model(\"{weapon.AttachmentModels}att_{token}.mdl\")\n";
-                File.WriteAllText(Path.Combine(attachments, attClass + ".lua"),
-                    $"ATTACHMENT.Base = \"{baseClass}\"\nATTACHMENT.Name = \"{token}\"\n" + visual + RoundLists(weapon.MagazineRounds is { } rounds && rounds.TryGetValue(token, out var list) ? list : null));
+                var rounds = weapon.MagazineRounds is { } lists && lists.TryGetValue(token, out var list) ? list : ((string[], string[])?)null;
+                LuaFile.Write(AttachmentFile(attachments, baseClass, attClass),
+                    $"ATTACHMENT.Base = \"{baseClass}\"\nATTACHMENT.Name = \"{token}\"\n" + visual + Excluded(weapon, token, baseClass) + RoundLists(rounds)
+                    + Stats(token, defaultMag, weapon.Suppressed?.Contains(token) == true, names));
             }
             slots.Add("    {" + string.Join(", ", classes.Select(item => $"\"{item}\"")) + "},");
         }
-        File.WriteAllText(Path.Combine(swep, "customization.lua"),
-            "AddCSLuaFile()\n\n-- One table per slot; the first entry is equipped by default.\nSWEP.Customization = {\n"
-            + string.Join('\n', slots) + "\n}\n\n--NECESSARY: loads custom attachments from other authors\nrequire(\"mw_utils\")\nmw_utils.LoadInjectors(SWEP)\n");
+        slots.Insert(0, PerkSlot(attachments, className, names));
+        slots.AddRange(SharedSlots(weapon, attachments, className));
+        LuaFile.Write(Path.Combine(swep, "customization.lua"),
+            "AddCSLuaFile()\n\n" + SuppressorStats(weapon.Fire) + "\n-- One table per slot; the first entry is equipped by default.\nSWEP.Customization = {\n"
+            + string.Join('\n', slots) + "\n}\n\n-- NECESSARY: loads custom attachments from other authors\nrequire(\"mw_utils\")\nmw_utils.LoadInjectors(SWEP)\n");
         return root;
     }
+
+    // MW Base suppressors (att_vm_silencer*) and integrally suppressed barrels call weapon:doSuppressorStats(); mg_base has
+    // no default, so a weapon without it errors on equip. akilo47 swaps Primary.Sound to its .suppressed alias here.
+    private static string SuppressorStats(CodFireSet? fire) => $$"""
+        function SWEP:doSuppressorStats()
+        {{(fire?.Suppressed is { } sup ? $"    self.Primary.Sound = Sound(\"{sup}\")\n" : "")}}{{(fire?.SuppressedAds is { } supAds ? $"    self.Primary.AdsSound = Sound(\"{supAds}\")\n" : "")}}    self.Reverb = {
+                RoomScale = 50000,
+                Sounds = {
+                    Outside = {
+                        Layer = Sound("Atmo_SMG_Sup.Outside"),
+                        Reflection = Sound("Reflection_ARSUP.Outside")
+                    },
+
+                    Inside = {
+                        Layer = Sound("Atmo_AR_Sup.Inside"),
+                        Reflection = Sound("Reflection_ARSUP.Inside")
+                    }
+                }
+            }
+            self.ParticleEffects.MuzzleFlash = self.ParticleEffects.MuzzleFlash_Suppressed
+        end
+
+        """;
 
     /// <summary>
     /// att_magazine round lists: BulletList keeps the old count until the 9031 ResetBullets event (where j_mag1 turns into
@@ -100,14 +149,176 @@ public static class MwBaseLua
         if (rounds is not { } lists) return "";
         static string List(string name, string[] bones) => $"ATTACHMENT.{name} = {{\n"
             + string.Concat(bones.Select((bone, index) => $"    [{index + 1}] = {{\"{bone}\"}},\n")) + "}\n";
-        return "\n-- round, bone name (top round first)\n" + List("BulletList", lists.Current) + List("ReserveBulletList", lists.Reserve);
+        return "\n-- round, bone name (top round first)\n" + List("BulletList", lists.Current) + "\n" + List("ReserveBulletList", lists.Reserve);
     }
+
+    /// <summary>
+    /// Stats that follow from the part itself: magazine capacity and its smag/xmag reload/inspect animations, and the
+    /// suppressed sound/flash of an integrally suppressed barrel. Handling numbers (ADS speed, range) are left to tune.
+    /// </summary>
+    private static string Stats(string token, int? defaultMag, bool suppressed, IReadOnlyDictionary<string, (string Name, int Frames, int? MagFrame)> sequences)
+    {
+        var lines = new List<string>();
+        if (QcAttachments.Capacity(token) is { } rounds)
+        {
+            lines.Add($"weapon.Primary.ClipSize = {rounds}");
+            if (QcAttachments.MagVariant(rounds, defaultMag) is { } variant)
+            {
+                var suffix = MagVariants.First(item => item.Variant == variant).Suffix;
+                foreach (var key in MagVariantKeys(sequences, variant))
+                    lines.Add($"weapon.Animations.{key} = weapon.Animations.{key}{suffix}");
+            }
+        }
+        if (suppressed) lines.Add("weapon:doSuppressorStats()");
+        if (lines.Count == 0) return "";
+        return "\nlocal BaseClass = GetAttachmentBaseClass(ATTACHMENT.Base)\nfunction ATTACHMENT:Stats(weapon)\n    BaseClass.Stats(self, weapon)\n"
+            + string.Concat(lines.Select(line => $"    {line}\n")) + "end\n";
+    }
+
+    /// <summary>
+    /// Perk slot like the official automatic rifles (mg_mike4 / mg_kilo433 customization.lua): "att_perk" (none) first,
+    /// then MW Base's shared perks. Sleight of Hand needs this weapon's fast reloads, so it gets its own attachment
+    /// (attachment_vm_ar_akilo47_perk_soh). The perk slot comes first: Stats run in slot order, so a magazine's
+    /// Reload = Reload_Xmag afterwards picks up the fast variant soh put there.
+    /// </summary>
+    private static string PerkSlot(string attachments, string className, IReadOnlyDictionary<string, (string Name, int Frames, int? MagFrame)> sequences)
+    {
+        var perks = new List<string> { "att_perk" };
+        var swaps = new List<string>();
+        foreach (var suffix in MagVariants.Select(variant => variant.Suffix).Prepend(""))
+        foreach (var (slow, fast) in new[] { ("reload", "reload_fast"), ("reload_empty", "reload_empty_fast") })
+        {
+            var variant = suffix.Length == 0 ? "" : "_" + suffix[1..].ToLowerInvariant();
+            if (!sequences.ContainsKey(slow + variant) || !sequences.ContainsKey(fast + variant)) continue;
+            var key = slow == "reload" ? "Reload" : "Reload_Empty";
+            swaps.Add($"    weapon.Animations.{key}{suffix} = weapon.Animations.{key}_Fast{suffix}");
+        }
+        if (swaps.Count > 0)
+        {
+            var soh = $"{className}_perk_soh";
+            perks.Add(soh);
+            LuaFile.Write(AttachmentFile(attachments, "att_perk", soh),
+                "ATTACHMENT.Base = \"att_perk_soh\"\n\nlocal BaseClass = GetAttachmentBaseClass(ATTACHMENT.Base)\nfunction ATTACHMENT:Stats(weapon)\n    BaseClass.Stats(self, weapon)\n"
+                + string.Join('\n', swaps) + "\nend\n");
+        }
+        // Burst rewrites Firemodes[1], which is Full Auto here (as on mike4); the rest only touch Bullet stats.
+        perks.AddRange(["att_perk_mw_burst", "att_perk_fmj", "att_perk_ricochet", "att_perk_headshot"]);
+        return "    {" + string.Join(", ", perks.Select(item => $"\"{item}\"")) + "},";
+    }
+
+    /// <summary>
+    /// Categories a barrel cannot carry (akilo47 smgbarcust: ExcludedCategories = {"Grips"}): a shared muzzle/laser/grip
+    /// slot exists, but this barrel lacks its tag (or, barsil, is suppressed and has no muzzle thread).
+    /// </summary>
+    private static string Excluded(MwBaseWeapon weapon, string token, string baseClass)
+    {
+        if (baseClass != "att_barrel" || weapon.BarrelMounts?.GetValueOrDefault(token) is not { } tags) return "";
+        var mounts = weapon.Mounts ?? new HashSet<string>();
+        var excluded = SharedAttachments.Where(set => set.Bones.Length > 0 && set.Entries.Any(entry => mounts.Contains(entry.Bone)))
+            .Where(set => !set.Entries.Any(entry => tags.Contains(entry.Bone)) || set.Category == "muzzles" && weapon.Suppressed?.Contains(token) == true)
+            .Select(set => set.Category switch { "muzzles" => "Muzzle Devices", "lasers" => "Lasers", _ => "Grips" }).ToArray();
+        return excluded.Length == 0 ? "" : "ATTACHMENT.ExcludedCategories = {" + string.Join(", ", excluded.Select(item => $"\"{item}\"")) + "}\n";
+    }
+
+    /// <summary>
+    /// MW Base's own sights, muzzles, lasers and grips (lua/weapons/mg_base/modules/attachmentss/*) for every mount the gun
+    /// has, as on the official ARs. Each set is gated on the bone the shared models are rooted on (att_vm_holo_west01 is
+    /// rooted on tag_holo...), which the receiver or a barrel must also carry, or the part would bonemerge to nothing.
+    /// </summary>
+    private static IEnumerable<string> SharedSlots(MwBaseWeapon weapon, string attachments, string className)
+    {
+        var mounts = weapon.Mounts ?? new HashSet<string>();
+        var barrels = weapon.Groups.Where(group => Bases.GetValueOrDefault(group[0].Root) == "att_barrel").SelectMany(group => group).ToArray();
+        foreach (var (category, bones, entries) in SharedAttachments)
+        {
+            var present = entries.Where(entry => mounts.Contains(entry.Bone)).Select(entry => entry.Class).ToArray();
+            if (present.Length == 0) continue;
+            // Muzzles/lasers/grips sit on barrel tags: parent them to the barrel (akilo47 attachments set this too) so a
+            // longer barrel carries them forward. Only when every barrel that allows the category has the tags (barsil excludes
+            // muzzles, so it does not count), or the default barrel would drop them. Single-file barrels are bodygroups of
+            // the viewmodel itself (no model to parent to), so shared parts bonemerge onto the viewmodel directly.
+            var carriers = barrels.Where(item => !(category == "muzzles" && weapon.Suppressed?.Contains(item.Token) == true)).ToArray();
+            var onBarrel = category != "sights" && weapon.Bodygroups is null && carriers.Length > 0 && carriers.All(item => weapon.BarrelMounts?.GetValueOrDefault(item.Token)?.IsSupersetOf(bones) == true);
+            var classes = present.Select(shared => onBarrel ? BarrelChild(attachments, className, shared) : shared);
+            // Integrally suppressed barrels exclude Muzzle Devices themselves (Excluded), like smgbarcust excludes Grips.
+            yield return "    {" + string.Join(", ", classes.Prepend(EmptyClass(category)).Select(item => $"\"{item}\"")) + "},";
+        }
+    }
+
+    private static string EmptyClass(string category) => category switch
+    {
+        "sights" => "att_sight", "muzzles" => "att_muzzle", "lasers" => "att_laser", _ => "att_grip",
+    };
+
+    /// <summary>A copy of a shared attachment parented to the weapon's barrel (BonemergeToCategory Barrels).</summary>
+    private static string BarrelChild(string attachments, string className, string shared)
+    {
+        var child = $"{className}_{shared["att_vm_".Length..]}";
+        LuaFile.Write(AttachmentFile(attachments, BaseOf(shared), child),
+            $"ATTACHMENT.Base = \"{shared}\"\nATTACHMENT.BonemergeToCategory = {{\"Barrels\"}}\n");
+        return child;
+    }
+
+    private static string BaseOf(string shared) => SharedAttachments.First(set => set.Entries.Any(entry => entry.Class == shared)).Category switch
+    {
+        "muzzles" => "att_muzzle", "lasers" => "att_laser", _ => "att_grip",
+    };
+
+    // Root bone of each shared model, read from its .mdl in modern_wokefare_base (attachments/*.mdl, bone 0).
+    private static readonly (string Category, string[] Bones, (string Class, string Bone)[] Entries)[] SharedAttachments =
+    [
+        ("sights", [], [
+            ("att_vm_reflex_east01", "tag_reflex"), ("att_vm_reflex_west03", "tag_reflex"), ("att_vm_minireddot01_tall", "tag_reflex"),
+            ("att_vm_minireddot02_tall", "tag_reflex"), ("att_vm_holo_west01", "tag_holo"), ("att_vm_holo_east01", "tag_holo"),
+            ("att_vm_reflex_02", "tag_holo"), ("att_vm_2x_west02_holo", "tag_holo"), ("att_vm_hybrid_west01", "tag_hybrid"),
+            ("att_vm_thermal_east01_hybrid", "tag_hybrid"), ("att_vm_4x_west01_tall", "tag_acog_2"), ("att_vm_4x_east01_tall", "tag_acog_2"),
+            ("att_vm_thermal_west01", "tag_thermal"), ("att_vm_scope_mike14", "tag_scope"),
+        ]),
+        ("muzzles", ["tag_silencer"], [
+            ("att_vm_flashhider01", "tag_silencer"), ("att_vm_flashhider02", "tag_silencer"), ("att_vm_compensator01", "tag_silencer"),
+            ("att_vm_compensator02", "tag_silencer"), ("att_vm_muzzlebrake01", "tag_silencer"), ("att_vm_muzzlebrake02", "tag_silencer"),
+            ("att_vm_breacher01", "tag_silencer"), ("att_vm_silencer01", "tag_silencer"), ("att_vm_silencer02", "tag_silencer"),
+            ("att_vm_silencer03", "tag_silencer"), ("att_vm_silencer04", "tag_silencer"),
+        ]),
+        ("lasers", ["tag_laser_attach"], [
+            ("att_vm_laser01", "tag_laser_attach"), ("att_vm_laser01_cylinder", "tag_laser_attach"), ("att_vm_laser02", "tag_laser_attach"),
+            ("att_vm_laser02_cylinder", "tag_laser_attach"), ("att_vm_laser03", "tag_laser_attach"),
+        ]),
+        ("grips", ["tag_grip_attach", "tag_folding_grip"], [
+            ("att_vm_angledgrip01", "tag_grip_attach"), ("att_vm_angledgrip02", "tag_grip_attach"), ("att_vm_vertgrip01", "tag_folding_grip"),
+            ("att_vm_vertgrip02", "tag_folding_grip"), ("att_vm_stubbygrip01", "tag_folding_grip"), ("att_vm_bipodgrip", "tag_folding_grip"),
+        ]),
+    ];
+
+    // Base class -> subfolder, as in the official akilo47 pack (attachmentss/akilo47/barrels, mags, stock...).
+    // mw_assets/attachments.lua loads attachmentss recursively and names classes by file, so folders are only for people.
+    private static readonly Dictionary<string, string> Folders = new(StringComparer.Ordinal)
+    {
+        ["att_barrel"] = "barrels", ["att_magazine"] = "mags", ["att_stock"] = "stock", ["att_pistolgrip"] = "pistolgrips",
+        ["att_grip"] = "grips", ["att_sight"] = "sights", ["att_muzzle"] = "muzzles", ["att_laser"] = "lasers", ["att_perk"] = "perks",
+    };
+
+    private static string AttachmentFile(string attachments, string baseClass, string attClass)
+    {
+        var folder = Path.Combine(attachments, Folders.GetValueOrDefault(baseClass, "misc"));
+        Directory.CreateDirectory(folder);
+        return Path.Combine(folder, attClass + ".lua");
+    }
+
+    /// <summary>Base keys (Reload, Inspect...) whose sequence has a compiled _&lt;variant&gt; version.</summary>
+    private static IEnumerable<string> MagVariantKeys(IReadOnlyDictionary<string, (string Name, int Frames, int? MagFrame)> sequences, string variant) =>
+        AnimationKeys.Where(entry => entry.Key.StartsWith("Reload", StringComparison.Ordinal) || entry.Key.StartsWith("Inspect", StringComparison.Ordinal))
+            .Where(entry => entry.Sequences.Length > 0 && sequences.ContainsKey($"{entry.Sequences[0]}_{variant}"))
+            .Select(entry => entry.Key);
 
     private static string Animations(IReadOnlyDictionary<string, (string Name, int Frames, int? MagFrame)> sequences)
     {
         var text = new StringBuilder("AddCSLuaFile()\n\n-- Generated by Alchemy Stars. Lengths are seconds at Fps 30; tune per feel.\nSWEP.Animations = {\n");
         text.AppendLine("    [\"Idle\"] = {\n        Sequences = {\"idle\"},\n        Fps = 30,\n        Events = {\n            {Time = 0, Callback = function(self) self:EnableGrip() end},\n        }\n    },\n");
-        foreach (var (key, candidates) in AnimationKeys)
+        // Each base key, then its _Smag/_Xmag copies (Reload_Xmag -> reload_xmag) that magazine attachments swap in.
+        var entries = AnimationKeys.Concat(MagVariants.SelectMany(variant => MagVariantKeys(sequences, variant.Variant)
+            .Select(key => (Key: key + variant.Suffix, Sequences: new[] { $"{AnimationKeys.First(entry => entry.Key == key).Sequences[0]}_{variant.Variant}" }))));
+        foreach (var (key, candidates) in entries)
         {
             var present = candidates.Where(sequences.ContainsKey).ToArray();
             if (present.Length == 0) continue;
@@ -158,9 +369,9 @@ public static class MwBaseLua
         SWEP.Slot = 2
         SWEP.HoldType = "Rifle"
 
-        SWEP.Primary.Sound = Sound("Weapon_SMG1.Single")
+        SWEP.Primary.Sound = Sound("{{{weapon.Fire?.Fire ?? "Weapon_SMG1.Single"}}}"){{{(weapon.Fire?.FireAds is { } ads ? $"\nSWEP.Primary.AdsSound = Sound(\"{ads}\")" : "")}}}
         SWEP.Primary.Ammo = "SMG1"
-        SWEP.Primary.ClipSize = 30
+        SWEP.Primary.ClipSize = {{{weapon.Groups.Select(group => QcAttachments.Capacity(group[0].Token)).FirstOrDefault(rounds => rounds is not null) ?? 30}}}
         SWEP.Primary.Automatic = true
         SWEP.Primary.BurstRounds = 1
         SWEP.Primary.BurstDelay = 0
@@ -176,18 +387,53 @@ public static class MwBaseLua
         SWEP.Reverb = {
             RoomScale = 50000,
             Sounds = {
-                Outside = {Layer = Sound("Atmo_SMG.Outside"), Reflection = Sound("Reflection_AR.Outside")},
-                Inside = {Layer = Sound("Atmo_SMG.Inside"), Reflection = Sound("Reflection_AR.Inside")},
+                Outside = {
+                    Layer = Sound("Atmo_SMG.Outside"),
+                    Reflection = Sound("Reflection_AR.Outside")
+                },
+
+                Inside = {
+                    Layer = Sound("Atmo_SMG.Inside"),
+                    Reflection = Sound("Reflection_AR.Inside")
+                },
             }
         }
 
         SWEP.Firemodes = {
-            [1] = {Name = "Full Auto", OnSet = function() return "Firemode_Auto" end},
-            [2] = {Name = "Semi Auto", OnSet = function(self) self.Primary.Automatic = false return "Firemode_Semi" end},
+            [1] = {
+                Name = "Full Auto",
+                OnSet = function()
+                    return "Firemode_Auto"
+                end
+            },
+
+            [2] = {
+                Name = "Semi Auto",
+                OnSet = function(self)
+                    self.Primary.Automatic = false
+
+                    return "Firemode_Semi"
+                end
+            },
         }
 
-        SWEP.Cone = {Hip = 0.4, TacStance = 0.15, Ads = 0, Increase = 0.08, TacStanceMultiplier = 0.8, AdsMultiplier = 0, Max = 1.5}
-        SWEP.Recoil = {Vertical = {0.8, 1.0}, Horizontal = {-0.6, 0.6}, Shake = 1.2, AdsMultiplier = 0.5, Seed = {{{Seed(className)}}} }
+        SWEP.Cone = {
+            Hip = 0.4,
+            TacStance = 0.15,
+            Ads = 0,
+            Increase = 0.08,
+            TacStanceMultiplier = 0.8,
+            AdsMultiplier = 0,
+            Max = 1.5
+        }
+
+        SWEP.Recoil = {
+            Vertical = {0.8, 1.0},
+            Horizontal = {-0.6, 0.6},
+            Shake = 1.2,
+            AdsMultiplier = 0.5,
+            Seed = {{{Seed(className)}}}
+        }
 
         SWEP.Bullet = {
             Damage = {28, 15},
@@ -198,21 +444,43 @@ public static class MwBaseLua
             NumBullets = 1,
             PhysicsMultiplier = 1,
             HeadshotMultiplier = 1,
-            Penetration = {DamageMultiplier = 0.8, MaxCount = 3, Thickness = 10},
+            Penetration = {
+                DamageMultiplier = 0.8,
+                MaxCount = 3,
+                Thickness = 10
+            },
         }
 
-        SWEP.Zoom = {IdleSway = 0.1, FovMultiplier = 0.95, ViewModelFovMultiplier = 1, Blur = {EyeFocusDistance = 8}}
+        SWEP.Zoom = {
+            IdleSway = 0.1,
+            FovMultiplier = 0.95,
+            ViewModelFovMultiplier = 1,
+            Blur = {
+                EyeFocusDistance = 8
+            }
+        }
 
         -- Worldmodel root is ValveBiped.Bip01_R_Hand; tune these against a playermodel.
-        SWEP.WorldModelOffsets = {Bone = "tag_sling", Angles = Angle(0, 90, -90), Pos = Vector(-5, 0, 9)}
+        SWEP.WorldModelOffsets = {
+            Bone = "tag_sling",
+            Angles = Angle(0, 90, -90),
+            Pos = Vector(-5, 0, 9)
+        }
 
         SWEP.ViewModelOffsets = {
-            Aim = {Angles = Angle(0, 0, 0), Pos = Vector(0, 0, 0)},
-            Idle = {Angles = Angle(0, 0, 0), Pos = Vector(0, 0, 0)},
+            Aim = {
+                Angles = Angle(0, 0, 0),
+                Pos = Vector(0, 0, 0)
+            },
+
+            Idle = {
+                Angles = Angle(0, 0, 0),
+                Pos = Vector(0, 0, 0)
+            },
         }
 
         SWEP.Shell = "mwb_shelleject_9mm"
-        """.Replace("\r\n", "\n") + "\n";
+        """ + "\n";
 
     private static string Seconds(int frames) => (Math.Max(1, frames) / Fps).ToString("0.###", CultureInfo.InvariantCulture);
 

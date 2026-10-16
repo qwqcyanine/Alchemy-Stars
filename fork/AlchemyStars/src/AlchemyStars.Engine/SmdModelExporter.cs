@@ -13,8 +13,10 @@ namespace AlchemyStars.Engine;
 internal static class SmdModelExporter
 {
     /// <param name="skipMeshes">Merged meshes to skip; with <paramref name="takeMeshes"/> selects one part's meshes.</param>
-    internal static void Save(string output, string mergedCast, Skeleton skeleton, float scale = 1,
-        int skipMeshes = 0, int takeMeshes = int.MaxValue)
+    /// <param name="meshFilter">Keeps a mesh only if true for the names of the bones its vertices are weighted to.</param>
+    /// <returns>Meshes written.</returns>
+    internal static int Save(string output, string mergedCast, Skeleton skeleton, float scale = 1,
+        int skipMeshes = 0, int takeMeshes = int.MaxValue, Func<IReadOnlySet<string>, bool>? meshFilter = null)
     {
         var bind = new SkeletonAnimation("bind", skeleton) { TransformType = TransformType.Absolute, Framerate = 30 };
         for (var index = 0; index < skeleton.Bones.Count; index++)
@@ -26,14 +28,17 @@ internal static class SmdModelExporter
         using var writer = new StreamWriter(output, true, new UTF8Encoding(false));
         writer.WriteLine("triangles");
         var model = CastReader.Load(mergedCast).RootNodes.SelectMany(DescendantsAndSelf).OfType<ModelNode>().Single();
+        var written = 0;
         foreach (var mesh in model.Meshes.Skip(skipMeshes).Take(takeMeshes))
         {
+            var bones = mesh.VertexWeightBoneBuffer is { } boneBuffer ? Integers(boneBuffer) : [];
+            var weights = mesh.VertexWeightValueBuffer?.Values;
+            if (meshFilter is not null && !meshFilter(WeightedBones(skeleton, bones, weights))) continue;
+            written++;
             var positions = mesh.VertexPositionBuffer.Values;
             var normals = mesh.VertexNormalBuffer?.Values;
             var uv = (mesh.GetUVLayer(0) as CastArrayProperty<Vector2>)?.Values;
             var indices = Integers(mesh.FaceBuffer);
-            var bones = mesh.VertexWeightBoneBuffer is { } boneBuffer ? Integers(boneBuffer) : [];
-            var weights = mesh.VertexWeightValueBuffer?.Values;
             var material = mesh.Material?.Name;
             if (string.IsNullOrWhiteSpace(material)) material = "material";
             if (material.Contains('\n') || material.Contains('\r')) throw new InvalidDataException("Invalid material name.");
@@ -75,6 +80,16 @@ internal static class SmdModelExporter
             }
         }
         writer.WriteLine("end");
+        return written;
+    }
+
+    private static HashSet<string> WeightedBones(Skeleton skeleton, int[] bones, IReadOnlyList<float>? weights)
+    {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var index = 0; index < bones.Length; index++)
+            if ((weights is null || index < weights.Count && weights[index] > 0) && (uint)bones[index] < skeleton.Bones.Count)
+                names.Add(skeleton.Bones[bones[index]].Name!);
+        return names;
     }
 
     private static int[] Integers(CastProperty property) => property switch
