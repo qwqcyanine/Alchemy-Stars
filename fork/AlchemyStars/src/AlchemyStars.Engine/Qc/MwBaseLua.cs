@@ -22,7 +22,8 @@ public sealed record MwBaseWeapon(
     IReadOnlySet<string>? Suppressed = null,
     CodFireSet? Fire = null,
     IReadOnlySet<string>? Mounts = null,
-    IReadOnlyDictionary<string, HashSet<string>>? BarrelMounts = null);
+    IReadOnlyDictionary<string, HashSet<string>>? BarrelMounts = null,
+    bool LaserRail = false);
 
 /// <summary>
 /// Writes a drop-in MW Base (mg_base) SWEP: lua/weapons/mg_&lt;name&gt;/{shared,animations,customization}.lua plus one
@@ -239,7 +240,7 @@ public static class MwBaseLua
             // the viewmodel itself (no model to parent to), so shared parts bonemerge onto the viewmodel directly.
             var carriers = barrels.Where(item => !(category == "muzzles" && weapon.Suppressed?.Contains(item.Token) == true)).ToArray();
             var onBarrel = category != "sights" && weapon.Bodygroups is null && carriers.Length > 0 && carriers.All(item => weapon.BarrelMounts?.GetValueOrDefault(item.Token)?.IsSupersetOf(bones) == true);
-            var classes = present.Select(shared => onBarrel ? BarrelChild(attachments, className, shared) : shared);
+            var classes = present.Select(shared => onBarrel ? BarrelChild(attachments, className, shared, weapon) : shared);
             // Integrally suppressed barrels exclude Muzzle Devices themselves (Excluded), like smgbarcust excludes Grips.
             yield return "    {" + string.Join(", ", classes.Prepend(EmptyClass(category)).Select(item => $"\"{item}\"")) + "},";
         }
@@ -250,13 +251,42 @@ public static class MwBaseLua
         "sights" => "att_sight", "muzzles" => "att_muzzle", "lasers" => "att_laser", _ => "att_grip",
     };
 
-    /// <summary>A copy of a shared attachment parented to the weapon's barrel (BonemergeToCategory Barrels).</summary>
-    private static string BarrelChild(string attachments, string className, string shared)
+    /// <summary>
+    /// A copy of a shared attachment parented to the weapon's barrel (BonemergeToCategory Barrels). Like the official
+    /// akilo47 grips/lasers it also sets what the shared class cannot know: the left-hand grip pose, and the receiver's
+    /// laser rail cover ("laser" bodygroup, hidden without a laser). MountOffset is a hand-tuned fit-up: CoD16-era shared
+    /// models never sit right on every CoD20 handguard, and every grip of a slot shares one barrel tag, so it is applied
+    /// per attachment by moving the barrel's mount bone (ManipulateBonePosition, barrel space) while it is equipped.
+    /// </summary>
+    private static string BarrelChild(string attachments, string className, string shared, MwBaseWeapon weapon)
     {
         var child = $"{className}_{shared["att_vm_".Length..]}";
-        LuaFile.Write(AttachmentFile(attachments, BaseOf(shared), child),
-            $"ATTACHMENT.Base = \"{shared}\"\nATTACHMENT.BonemergeToCategory = {{\"Barrels\"}}\n");
+        var mount = SharedAttachments.SelectMany(set => set.Entries).First(entry => entry.Class == shared).Bone;
+        var text = new StringBuilder($"ATTACHMENT.Base = \"{shared}\"\nATTACHMENT.BonemergeToCategory = {{\"Barrels\"}}\n");
+        // The rail cover is CoD's cylinder-laser ring mount: box lasers (laser01-03) clamp on the handguard without it.
+        if (BaseOf(shared) == "att_laser" && weapon.LaserRail && shared.Contains("cylinder", StringComparison.Ordinal))
+            text.Append("ATTACHMENT.Bodygroups = {\n    [\"laser\"] = 1\n}\n");
+        text.Append($"-- Fit-up on this weapon's barrels in inches (x forward, y left, z up); edit, then lua_refresh / re-equip.\nATTACHMENT.MountOffset = Vector(0, 0, 0)\n");
+        text.Append("\nlocal BaseClass = GetAttachmentBaseClass(ATTACHMENT.Base)\n");
+        if (GripPose(shared, weapon.GripLayers) is { } pose)
+            text.Append($"\nfunction ATTACHMENT:PostProcess(weapon)\n    BaseClass.PostProcess(self, weapon)\n    weapon:SetGripPoseParameter(\"{pose}\")\nend\n");
+        // shortcut: the offset stays on the barrel bone after unequipping; harmless while only this slot uses that tag.
+        text.Append($"\nfunction ATTACHMENT:Appearance(model, category)\n    BaseClass.Appearance(self, model, category)\n    if (category != \"Barrels\" || !IsValid(model)) then return end\n"
+            + $"    local bone = model:LookupBone(\"{mount}\")\n    if (bone != nil) then model:ManipulateBonePosition(bone, self.MountOffset) end\nend\n");
+        LuaFile.Write(AttachmentFile(attachments, BaseOf(shared), child), text.ToString());
         return child;
+    }
+
+    /// <summary>
+    /// Left-hand pose per shared grip, as the official akilo47 grips set it (angled -> grip_ang_offset, vertical/bipod ->
+    /// grip_vert_offset, stubby -> grip_vert_pro_offset); a pose the weapon did not compile falls back to grip_vert_offset.
+    /// </summary>
+    private static string? GripPose(string shared, IReadOnlyList<string> layers)
+    {
+        if (BaseOf(shared) != "att_grip") return null;
+        var pose = shared.Contains("angledgrip", StringComparison.Ordinal) ? "grip_ang_offset"
+            : shared.Contains("stubbygrip", StringComparison.Ordinal) ? "grip_vert_pro_offset" : "grip_vert_offset";
+        return layers.Contains(pose) ? pose : layers.Contains("grip_vert_offset") ? "grip_vert_offset" : null;
     }
 
     private static string BaseOf(string shared) => SharedAttachments.First(set => set.Entries.Any(entry => entry.Class == shared)).Category switch
@@ -286,7 +316,8 @@ public static class MwBaseLua
         ]),
         ("grips", ["tag_grip_attach", "tag_folding_grip"], [
             ("att_vm_angledgrip01", "tag_grip_attach"), ("att_vm_angledgrip02", "tag_grip_attach"), ("att_vm_vertgrip01", "tag_folding_grip"),
-            ("att_vm_vertgrip02", "tag_folding_grip"), ("att_vm_stubbygrip01", "tag_folding_grip"), ("att_vm_bipodgrip", "tag_folding_grip"),
+            ("att_vm_vertgrip02", "tag_folding_grip"), ("att_vm_vertgrip03", "tag_folding_grip"), ("att_vm_stubbygrip01", "tag_folding_grip"),
+            ("att_vm_stubbygrip02", "tag_folding_grip"), ("att_vm_bipodgrip", "tag_folding_grip"),
         ]),
     ];
 
@@ -460,11 +491,11 @@ public static class MwBaseLua
             }
         }
 
-        -- Worldmodel root is ValveBiped.Bip01_R_Hand; tune these against a playermodel.
+        -- w_ is rigged like the official w_mcharlie (hand-rooted, same tag_sling pose); these are its offsets.
         SWEP.WorldModelOffsets = {
             Bone = "tag_sling",
-            Angles = Angle(0, 90, -90),
-            Pos = Vector(-5, 0, 9)
+            Angles = Angle(0, 95, -90),
+            Pos = Vector(3, -6, -3.5)
         }
 
         SWEP.ViewModelOffsets = {

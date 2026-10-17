@@ -416,7 +416,10 @@ public static partial class QcProjectGenerator
                     Heading("MW Rig Bones") + DefineBoneLines(isRig[true], null) + "\n" + chands.Definitions);
                 File.WriteAllText(Path.Combine(output, "bones_weapon.qc"), Heading("Weapon Bones") + DefineBoneLines(isRig[false], null));
                 File.WriteAllText(Path.Combine(output, "bones_chands.qci"), Heading("C Hands Bonemerge") + chands.Bonemerge);
-                File.WriteAllText(Path.Combine(output, "bones_weapon_worldmodel.qc"), DefineBones(worldBones, HandBone));
+                File.WriteAllText(Path.Combine(output, "bones_weapon_worldmodel.qc"), HandRig(worldBones) is { } handRig
+                    // w_mcharlie: hand-rooted rig, and every bone bonemerged so the att_*.mdl parts have set-up mounts to snap to.
+                    ? DefineBones(handRig, null) + "\n// Bonemerge targets\n" + Bonemerges(handRig.Bones.Select(bone => bone.Name!))
+                    : DefineBones(worldBones, HandBone));
             }
             else
             {
@@ -517,7 +520,8 @@ public static partial class QcProjectGenerator
                 // Mount tags shared MW Base sights/muzzles/lasers/grips bonemerge onto: on the viewmodel, and per barrel.
                 bones,
                 groups.SelectMany(group => group).ToDictionary(item => item.Token,
-                    item => Plan([item.Part with { ParentBoneTag = "" }]).Skeleton.Bones.Select(bone => bone.Name!).ToHashSet(StringComparer.OrdinalIgnoreCase))));
+                    item => Plan([item.Part with { ParentBoneTag = "" }]).Skeleton.Bones.Select(bone => bone.Name!).ToHashSet(StringComparer.OrdinalIgnoreCase)),
+                viewMeshes.Contains("$bodygroup \"laser\"", StringComparison.Ordinal)));
             return new(viewQc, worldQc, sequences, layers, missing, attachmentQcs, lua, materialLog, sounds, notes);
         }
         finally
@@ -949,10 +953,13 @@ public static partial class QcProjectGenerator
             var plan = Plan([part with { ParentBoneTag = "" }]);
             var merged = Path.Combine(staging, "att_" + token + ".cast");
             MayaCastPackage.SaveModel(merged, plan, AnimationConverter.TranslatorFactory);
+            // The idle sequence animates bones to the SMD's skeleton frame, overriding $definebone: moved mounts go in both.
+            var skeleton = new Skeleton(plan.Skeleton.Name ?? token, [.. MoveMounts(plan.Skeleton)]);
+            skeleton.AssignBoneIndices();
             var mesh = $"meshes/att_{token}.smd";
-            SmdModelExporter.Save(Path.Combine(output, mesh), merged, plan.Skeleton, Inches, meshFilter: bones => !IsIronSight(bones));
+            SmdModelExporter.Save(Path.Combine(output, mesh), merged, skeleton, Inches, meshFilter: bones => !IsIronSight(bones));
             var sight = $"meshes/att_{token}_sight.smd";
-            var hasSight = SmdModelExporter.Save(Path.Combine(output, sight), merged, plan.Skeleton, Inches, meshFilter: IsIronSight) > 0;
+            var hasSight = SmdModelExporter.Save(Path.Combine(output, sight), merged, skeleton, Inches, meshFilter: IsIronSight) > 0;
             if (!hasSight) File.Delete(Path.Combine(output, sight));
             var names = plan.Skeleton.Bones.Select(bone => bone.Name!).ToHashSet(StringComparer.OrdinalIgnoreCase);
             var text = new StringBuilder($"// MW Base attachment, bonemerged onto the viewmodel by bone name\n\n$modelname \"{modelDirectory}att_{token}.mdl\"\n\n");
@@ -961,7 +968,7 @@ public static partial class QcProjectGenerator
             text.Append(common.Replace("$cdmaterials", "\n// Materials\n\n$cdmaterials", StringComparison.Ordinal));
             // Keep unweighted tags (tag_grip_attach, tag_flash…): grips/muzzles bonemerge onto them. $bonemerge makes Source
             // set them up although nothing in this model uses them; otherwise a grip parented here reads an unset matrix.
-            text.AppendLine("\n// Weapon Bones\n").Append(DefineBones(plan.Skeleton, null));
+            text.AppendLine("\n// Weapon Bones\n").Append(DefineBones(skeleton, null));
             text.AppendLine("\n// Bonemerge targets\n").Append(Bonemerges(names.Order(StringComparer.Ordinal)));
             if (new[] { "tag_flash", "tag_flash_silenced" }.FirstOrDefault(names.Contains) is { } flash)
                 text.AppendLine($"\n// Attachments\n\n$attachment \"muzzle\" \"{flash}\" 0 0 0 rotate 0 0 0");
@@ -988,13 +995,19 @@ public static partial class QcProjectGenerator
             MayaCastPackage.SaveModel(merged, plan, AnimationConverter.TranslatorFactory);
             var skip = context.Sum(item => MeshCount(item.FilePath));
             var smd = Path.Combine(output, "meshes", name + ".smd");
-            var written = SmdModelExporter.Save(smd, merged, plan.Skeleton, Inches, skip, MeshCount(part.FilePath), filter);
+            // MW Base worldmodels get the official hand-rooted skeleton (see HandRig), so CAST weight indices are remapped by name.
+            var rig = splitSights && name.StartsWith("w_", StringComparison.Ordinal) ? HandRig(plan.Skeleton.Bones) : null;
+            var written = SmdModelExporter.Save(smd, merged, rig ?? plan.Skeleton, Inches, skip, MeshCount(part.FilePath), filter,
+                rig?.Bones.Select((bone, index) => (bone.Name!, index)).ToDictionary(StringComparer.OrdinalIgnoreCase) is { } index
+                    ? plan.Skeleton.Bones.Select(bone => index[bone.Name!]).ToArray() : null);
             if (written == 0 && filter is not null) File.Delete(smd);
             return written;
         }
 
-        Export(receiver, weapon, [hands], splitSights ? bones => !IsIronSight(bones) : null);
-        Export("w_" + receiver, standalone, [], splitSights ? bones => !IsIronSight(bones) : null);
+        // MW Base: iron sights and the laser rail cover go to their own bodygroups ("tag_sight", "laser") for optics/lasers to toggle.
+        Func<IReadOnlySet<string>, bool>? body = splitSights ? bones => !IsIronSight(bones) && !IsLaserRail(bones) : null;
+        Export(receiver, weapon, [hands], body);
+        Export("w_" + receiver, standalone, [], body);
         var view = new StringBuilder($"$bodygroup \"receiver\"\n{{\n\tstudio \"meshes/{receiver}.smd\"\n}}\n");
         var world = new StringBuilder($"$bodygroup \"receiver\"\n{{\n\tstudio \"meshes/w_{receiver}.smd\"\n}}\n");
         if (splitSights && Export(receiver + "_sight", weapon, [hands], IsIronSight) > 0)
@@ -1002,6 +1015,12 @@ public static partial class QcProjectGenerator
             Export("w_" + receiver + "_sight", standalone, [], IsIronSight);
             view.AppendLine(IronSightBodygroup($"meshes/{receiver}_sight.smd"));
             world.AppendLine(IronSightBodygroup($"meshes/w_{receiver}_sight.smd"));
+        }
+        if (splitSights && Export(receiver + "_laser", weapon, [hands], IsLaserRail) > 0)
+        {
+            Export("w_" + receiver + "_laser", standalone, [], IsLaserRail);
+            view.AppendLine(LaserRailBodygroup($"meshes/{receiver}_laser.smd"));
+            world.AppendLine(LaserRailBodygroup($"meshes/w_{receiver}_laser.smd"));
         }
         if (includeHands)
         {
@@ -1035,6 +1054,51 @@ public static partial class QcProjectGenerator
     /// <summary>CAST bind pose as $definebone (inches, QAngle pitch=eulerY yaw=eulerZ roll=eulerX); an optional parent receives the root.</summary>
     private static string DefineBones(Skeleton skeleton, string? rootParent) => DefineBones(skeleton.Bones, rootParent);
 
+    /// <summary>
+    /// Official MW Base worldmodel skeleton (w_mcharlie): ValveBiped.Bip01_R_Hand is the root and its idle holds tag_sling
+    /// at <see cref="SlingInHand"/>; SWEP.WorldModelOffsets (ManipulateBone on tag_sling) is tuned on top of that pose.
+    /// CoD roots the gun on j_gun with tag_sling 10 in away, which turned and threw the worldmodel off the hand. The hand
+    /// bone is placed so tag_sling lands on the official pose: every other bone keeps its model-space transform, so the
+    /// vertices need no change and the official offsets fit. Null when there is no tag_sling.
+    /// </summary>
+    private static Skeleton? HandRig(IEnumerable<SkeletonBone> source)
+    {
+        var bones = source.ToArray();
+        if (bones.FirstOrDefault(bone => string.Equals(bone.Name, "tag_sling", StringComparison.OrdinalIgnoreCase)) is not { } sling) return null;
+        static (Vector3 P, Quaternion Q) World(SkeletonBone bone) => bone.Parent is null
+            ? (bone.BaseLocalTranslation, bone.BaseLocalRotation)
+            : Mul(World(bone.Parent), (bone.BaseLocalTranslation, bone.BaseLocalRotation));
+        var anchor = Mul(World(sling), Inverse(SlingInHand));
+        var hand = new SkeletonBone(HandBone) { BaseLocalTranslation = anchor.P, BaseLocalRotation = anchor.Q };
+        // tag_sling must be the hand's direct child: WorldModelOffsets manipulates it in its parent's frame.
+        var slingCopy = new SkeletonBone(sling.Name!) { Parent = hand, BaseLocalTranslation = SlingInHand.P, BaseLocalRotation = SlingInHand.Q };
+        var copies = new Dictionary<SkeletonBone, SkeletonBone> { [sling] = slingCopy };
+        foreach (var bone in bones)
+        {
+            if (bone == sling) continue;
+            var copy = new SkeletonBone(bone.Name!) { BaseLocalTranslation = bone.BaseLocalTranslation, BaseLocalRotation = bone.BaseLocalRotation };
+            if (bone.Parent is { } parent && copies.TryGetValue(parent, out var parentCopy)) copy.Parent = parentCopy;
+            else
+            {
+                // Former roots (j_gun, CoD's parent of tag_sling) and bones whose parent was filtered out hang off
+                // tag_sling at their model-space pose, like every w_mcharlie bone.
+                var local = Mul(Inverse(World(sling)), World(bone));
+                copy.Parent = slingCopy;
+                copy.BaseLocalTranslation = local.P;
+                copy.BaseLocalRotation = Quaternion.Normalize(local.Q);
+            }
+            copies[bone] = copy;
+        }
+        var skeleton = new Skeleton(HandBone, [hand, slingCopy, .. copies.Values.Where(copy => copy != slingCopy)]);
+        skeleton.AssignBoneIndices();
+        return skeleton;
+    }
+
+    // w_mcharlie idle, measured in Gmod: tag_sling in hand space at (-0.541, 4.594, -0.418) in, QAngle (-90, -90, 0).
+    // Source angles: Rz(yaw) * Ry(pitch) * Rx(roll); bone translations are cm (Inches converts on write).
+    private static readonly (Vector3 P, Quaternion Q) SlingInHand = (new Vector3(-0.541016f, 4.59375f, -0.418457f) / Inches,
+        Quaternion.CreateFromAxisAngle(Vector3.UnitZ, -MathF.PI / 2) * Quaternion.CreateFromAxisAngle(Vector3.UnitY, -MathF.PI / 2));
+
     private static string DefineBones(IEnumerable<SkeletonBone> bones, string? rootParent) =>
         "// CAST bind pose in inches; rotation is QAngle pitch yaw roll\n" + DefineBoneLines(bones, rootParent);
 
@@ -1049,6 +1113,47 @@ public static partial class QcProjectGenerator
     private static readonly HashSet<string> IronSightBones = new(["tag_sight_on", "tag_sight_off", "tag_sight_on2", "tag_sight_off2"], StringComparer.OrdinalIgnoreCase);
 
     private static bool IsIronSight(IReadOnlySet<string> weightedBones) => weightedBones.Count > 0 && weightedBones.All(IronSightBones.Contains);
+
+    // CoD laser rail cover: a receiver mesh weighted only to tag_laser_show, drawn when CoD fits a laser.
+    private static bool IsLaserRail(IReadOnlySet<string> weightedBones) =>
+        weightedBones.Count > 0 && weightedBones.All(bone => bone.Equals("tag_laser_show", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Hidden by default; MW Base laser subclasses show it with Bodygroups ["laser"] = 1, like the official akilo47
+    /// "laser" group (its attachments use AttachmentBodygroups because the rail lives on the barrel model there).
+    /// </summary>
+    private static string LaserRailBodygroup(string mesh) => $"$bodygroup \"laser\"\n{{\n\tblank\n\tstudio \"{mesh}\"\n}}\n";
+
+    /// <summary>
+    /// Copy of the skeleton with a side-mounted tag_laser_attach rolled so its +Z points away from the gun. MW Base's box
+    /// lasers (laser01-03) clamp on their -Z face; with CoD's identity side tag they lay flat and sank into the handguard.
+    /// Grip tags stay where CoD put them: every shared grip of a slot hangs off the same tag, so per-grip fit-up is a
+    /// ManipulateBonePosition in the generated attachment Lua (ATTACHMENT.MountOffset), not a tag move.
+    /// </summary>
+    private static IReadOnlyList<SkeletonBone> MoveMounts(Skeleton skeleton)
+    {
+        static bool IsBarrelChild(SkeletonBone bone) => string.Equals(bone.Parent?.Name, "tag_barrel_attach", StringComparison.OrdinalIgnoreCase);
+        Quaternion? SideRoll(SkeletonBone bone)
+        {
+            if (!string.Equals(bone.Name, "tag_laser_attach", StringComparison.OrdinalIgnoreCase) || !IsBarrelChild(bone)) return null;
+            var position = bone.BaseLocalTranslation;
+            if (MathF.Abs(position.Y) * Inches < 0.3f || MathF.Abs(position.Y) <= MathF.Abs(position.Z)) return null;
+            var outward = new Vector3(0, MathF.Sign(position.Y), 0);
+            if (Vector3.Dot(Vector3.Transform(Vector3.UnitZ, bone.BaseLocalRotation), outward) > 0.7f) return null;
+            // Roll about the tag's own X: +90 deg turns +Z to -Y (right side), -90 deg to +Y (left side).
+            return bone.BaseLocalRotation * Quaternion.CreateFromAxisAngle(Vector3.UnitX, -MathF.Sign(position.Y) * MathF.PI / 2);
+        }
+        if (skeleton.Bones.All(bone => SideRoll(bone) is null)) return skeleton.Bones;
+        var copies = new Dictionary<SkeletonBone, SkeletonBone>();
+        foreach (var bone in skeleton.Bones)
+        {
+            var copy = new SkeletonBone(bone.Name!) { BaseLocalTranslation = bone.BaseLocalTranslation, BaseLocalRotation = bone.BaseLocalRotation };
+            if (bone.Parent is { } parent && copies.TryGetValue(parent, out var parentCopy)) copy.Parent = parentCopy;
+            if (SideRoll(bone) is { } rolled) copy.BaseLocalRotation = rolled;
+            copies[bone] = copy;
+        }
+        return [.. copies.Values];
+    }
 
     /// <summary>
     /// akilo47/anovember94 meshes.qc: MW Base sights set Bodygroups / AttachmentBodygroups ["tag_sight"] = 1 (2 for hybrids)

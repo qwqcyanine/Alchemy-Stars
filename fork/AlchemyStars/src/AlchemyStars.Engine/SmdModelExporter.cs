@@ -14,9 +14,10 @@ internal static class SmdModelExporter
 {
     /// <param name="skipMeshes">Merged meshes to skip; with <paramref name="takeMeshes"/> selects one part's meshes.</param>
     /// <param name="meshFilter">Keeps a mesh only if true for the names of the bones its vertices are weighted to.</param>
+    /// <param name="boneMap">CAST weight bone index -> index in <paramref name="skeleton"/>, when that is a rebuilt rig.</param>
     /// <returns>Meshes written.</returns>
     internal static int Save(string output, string mergedCast, Skeleton skeleton, float scale = 1,
-        int skipMeshes = 0, int takeMeshes = int.MaxValue, Func<IReadOnlySet<string>, bool>? meshFilter = null)
+        int skipMeshes = 0, int takeMeshes = int.MaxValue, Func<IReadOnlySet<string>, bool>? meshFilter = null, IReadOnlyList<int>? boneMap = null)
     {
         var bind = new SkeletonAnimation("bind", skeleton) { TransformType = TransformType.Absolute, Framerate = 30 };
         for (var index = 0; index < skeleton.Bones.Count; index++)
@@ -31,7 +32,7 @@ internal static class SmdModelExporter
         var written = 0;
         foreach (var mesh in model.Meshes.Skip(skipMeshes).Take(takeMeshes))
         {
-            var bones = mesh.VertexWeightBoneBuffer is { } boneBuffer ? Integers(boneBuffer) : [];
+            var bones = mesh.VertexWeightBoneBuffer is { } boneBuffer ? Integers(boneBuffer).Select(bone => boneMap is null || (uint)bone >= boneMap.Count ? bone : boneMap[bone]).ToArray() : [];
             var weights = mesh.VertexWeightValueBuffer?.Values;
             if (meshFilter is not null && !meshFilter(WeightedBones(skeleton, bones, weights))) continue;
             written++;
@@ -69,7 +70,7 @@ internal static class SmdModelExporter
                             throw new InvalidDataException("Invalid skin weights.");
                         links[bone] = links.GetValueOrDefault(bone) + weights[weightIndex];
                     }
-                    if (links.Count == 0) links[0] = 1;
+                    if (links.Count == 0) links[boneMap is { Count: > 0 } ? boneMap[0] : 0] = 1;
                     var total = links.Values.Sum();
                     var primaryBone = links.MaxBy(link => link.Value).Key;
                     writer.Write(FormattableString.Invariant($"{primaryBone} {position.X:R} {position.Y:R} {position.Z:R} {normal.X:R} {normal.Y:R} {normal.Z:R} {texture.X:R} {texture.Y:R} {links.Count}"));
