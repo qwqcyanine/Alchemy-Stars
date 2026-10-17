@@ -507,7 +507,7 @@ public static partial class QcProjectGenerator
                 return new(viewQc, worldQc, sequences, layers, missing, LuaDirectory: arc9Lua, MaterialLog: materialLog, Sounds: sounds, Notes: notes);
             }
             var attachmentDirectory = $"{modelDirectory}attachments/{weaponName}/";
-            var attachmentQcs = separate ? WriteAttachmentModels(output, staging, groups, attachmentDirectory, common) : [];
+            var attachmentQcs = separate ? WriteAttachmentModels(output, staging, groups, attachmentDirectory, common, clips) : [];
             if (separate) FormatOfficialFiles(output, new[] { viewQc, worldQc }.Concat(attachmentQcs));
             var lua = MwBaseLua.Write(output, new(weaponName, $"models/{modelDirectory}v_{weaponName}.mdl", $"models/{modelDirectory}w_{weaponName}.mdl",
                 $"models/{attachmentDirectory}", groups.Select(group => group.Select(item => (item.Token, RootBone(item.Part.FilePath))).ToArray()).ToArray(),
@@ -521,7 +521,9 @@ public static partial class QcProjectGenerator
                 bones,
                 groups.SelectMany(group => group).ToDictionary(item => item.Token,
                     item => Plan([item.Part with { ParentBoneTag = "" }]).Skeleton.Bones.Select(bone => bone.Name!).ToHashSet(StringComparer.OrdinalIgnoreCase)),
-                viewMeshes.Contains("$bodygroup \"laser\"", StringComparison.Ordinal)));
+                viewMeshes.Contains("$bodygroup \"laser\"", StringComparison.Ordinal),
+                // Shared grips/lasers follow tag_barrel_attach as VElements placed at each barrel's own mount tags.
+                groups.SelectMany(group => group).ToDictionary(item => item.Token, item => BarrelTags(Plan([item.Part with { ParentBoneTag = "" }]).Skeleton))));
             return new(viewQc, worldQc, sequences, layers, missing, attachmentQcs, lua, materialLog, sounds, notes);
         }
         finally
@@ -945,7 +947,7 @@ public static partial class QcProjectGenerator
     /// skeleton, its mesh, a muzzle attachment for barrels and an idle sequence.
     /// </summary>
     private static List<string> WriteAttachmentModels(string output, string staging, IReadOnlyList<(ModelPartSpec Part, string Token)[]> groups,
-        string modelDirectory, string common)
+        string modelDirectory, string common, Dictionary<string, string> clips)
     {
         var qcs = new List<string>();
         foreach (var (part, token) in groups.SelectMany(group => group))
@@ -972,12 +974,43 @@ public static partial class QcProjectGenerator
             text.AppendLine("\n// Bonemerge targets\n").Append(Bonemerges(names.Order(StringComparer.Ordinal)));
             if (new[] { "tag_flash", "tag_flash_silenced" }.FirstOrDefault(names.Contains) is { } flash)
                 text.AppendLine($"\n// Attachments\n\n$attachment \"muzzle\" \"{flash}\" 0 0 0 rotate 0 0 0");
-            text.AppendLine($"\n// Sequences\n\n$sequence \"idle\" {{\n\t\"{mesh}\"\n\tfps 30\n}}");
+            text.AppendLine($"\n// Sequences\n");
+            text.AppendLine(MagazineRounds(part) is not null && BulletPoses(plan, clips, token, output) is { } bullets
+                ? bullets : $"$sequence \"idle\" {{\n\t\"{mesh}\"\n\tfps 30\n}}");
             var qc = Path.Combine(output, $"att_{token}.qc");
             File.WriteAllText(qc, text.ToString());
             qcs.Add(qc);
         }
         return qcs;
+    }
+
+    /// <summary>
+    /// Magazine spring: CoD's bullet_additive[_&lt;capacity&gt;] keys the round stack and j_mag_follower per round fired
+    /// (frame i = i fired; at capacity-1 the rounds drop away and the follower rises to the lips). MW Base att_magazine
+    /// sets the mag model's "bullets_offset" pose to MaxClip1 - Clip1, clamped to its range, so the idle becomes a blend
+    /// with one held pose per round. Leading frames equal to the full pose are cut and the range starts there instead
+    /// (studiomdl allows 32 blends; 50-round mags only move over their last 12). Null without the clip.
+    /// </summary>
+    private static string? BulletPoses(SkeletonMergePlan plan, Dictionary<string, string> clips, string token, string output)
+    {
+        var clip = (QcAttachments.Capacity(token) is { } capacity ? clips.GetValueOrDefault($"bullet_additive_{capacity}") : null)
+            ?? clips.GetValueOrDefault("bullet_additive");
+        if (clip is null) return null;
+        var name = $"att_{token}_bullets";
+        var smd = Path.Combine(output, "anims", name + ".smd");
+        Bake(plan, clip, smd);
+        var poses = FrameSmds(smd, output, name);
+        File.Delete(smd);
+        var full = File.ReadAllText(Path.Combine(output, "anims", poses[0]));
+        var moves = poses.FindIndex(pose => File.ReadAllText(Path.Combine(output, "anims", pose)) != full);
+        // shortcut: a clip still moving over more than 32 rounds keeps only its last 32 poses.
+        var start = Math.Max(Math.Max(0, moves - 1), poses.Count - 32);
+        foreach (var pose in poses.Take(start)) File.Delete(Path.Combine(output, "anims", pose));
+        var last = poses.Count - 1;
+        if (start >= last) return null;
+        return $"$poseparameter \"bullets_offset\" {start} {last}\n\n$sequence \"idle\" {{\n"
+            + string.Concat(poses.Skip(start).Select(pose => $"\t\"anims/{pose}\"\n"))
+            + $"\tblendwidth {last - start + 1}\n\tblend \"bullets_offset\" {start} {last}\n\tfps 30\n}}";
     }
 
     /// <summary>Writes one SMD per part for the viewmodel (with hands) and the worldmodel (weapon only), returning both meshes.qc texts.</summary>
@@ -1127,9 +1160,24 @@ public static partial class QcProjectGenerator
     /// <summary>
     /// Copy of the skeleton with a side-mounted tag_laser_attach rolled so its +Z points away from the gun. MW Base's box
     /// lasers (laser01-03) clamp on their -Z face; with CoD's identity side tag they lay flat and sank into the handguard.
-    /// Grip tags stay where CoD put them: every shared grip of a slot hangs off the same tag, so per-grip fit-up is a
-    /// ManipulateBonePosition in the generated attachment Lua (ATTACHMENT.MountOffset), not a tag move.
+    /// Grip tags stay where CoD put them: every shared grip of a slot hangs off the same tag, so per-grip fit-up is the
+    /// attachment's own ATTACHMENT.VElement in the generated Lua, not a tag move.
     /// </summary>
+    /// <summary>Every bone of an attachment as its att_*.mdl compiles it (MoveMounts applied), in root-bone space, inches.</summary>
+    private static Dictionary<string, (Vector3 P, Quaternion Q)> BarrelTags(Skeleton skeleton)
+    {
+        var tags = new Dictionary<string, (Vector3 P, Quaternion Q)>(StringComparer.OrdinalIgnoreCase);
+        var world = new Dictionary<SkeletonBone, (Vector3 P, Quaternion Q)>();
+        foreach (var bone in MoveMounts(skeleton))
+        {
+            (Vector3 P, Quaternion Q) local = (bone.BaseLocalTranslation, bone.BaseLocalRotation);
+            // The root is the barrel's tag_barrel_attach, which the VElement follows: it is the origin.
+            var pose = world[bone] = bone.Parent is { } parent && world.TryGetValue(parent, out var up) ? Mul(up, local) : (Vector3.Zero, Quaternion.Identity);
+            tags[bone.Name!] = (pose.P * Inches, pose.Q);
+        }
+        return tags;
+    }
+
     private static IReadOnlyList<SkeletonBone> MoveMounts(Skeleton skeleton)
     {
         static bool IsBarrelChild(SkeletonBone bone) => string.Equals(bone.Parent?.Name, "tag_barrel_attach", StringComparison.OrdinalIgnoreCase);
@@ -1173,12 +1221,17 @@ public static partial class QcProjectGenerator
     {
         var owned = Plan(owners).Skeleton.Bones.Select(bone => bone.Name!).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var candidates = parts.SelectMany(part => Plan([part with { ParentBoneTag = "" }]).Skeleton.Bones.Skip(1))
-            .Select(bone => bone.Name!).Where(name => name.StartsWith("tag_", StringComparison.OrdinalIgnoreCase) && !owned.Contains(name))
+            .Where(bone => IsSocket(bone) && !owned.Contains(bone.Name!)).Select(bone => bone.Name!)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         // Only whole subtrees: a kept bone must not lose its parent.
         bool Droppable(SkeletonBone bone) => candidates.Contains(bone.Name!) && view.Bones.Where(child => child.Parent == bone).All(Droppable);
         return view.Bones.Where(Droppable).Select(bone => bone.Name!).ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
+
+    // Rounds and follower (children of j_mag1/j_mag2) belong to the mag model too: its bullets_offset pose moves them,
+    // and a viewmodel copy would bonemerge its rest pose over that, leaving the follower at the bottom of an empty mag.
+    private static bool IsSocket(SkeletonBone bone) => bone.Name!.StartsWith("tag_", StringComparison.OrdinalIgnoreCase)
+        || bone.Parent?.Name is { } parent && (string.Equals(parent, "j_mag1", StringComparison.OrdinalIgnoreCase) || string.Equals(parent, "j_mag2", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// MW rig legs: j_hip_le/_ri and everything under them (knees, ankles, tag_stowed_thigh) plus the foot IK tags.

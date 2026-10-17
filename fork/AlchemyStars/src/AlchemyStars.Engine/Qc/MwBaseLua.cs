@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Numerics;
 using System.Text;
 
 namespace AlchemyStars.Engine;
@@ -23,7 +24,8 @@ public sealed record MwBaseWeapon(
     CodFireSet? Fire = null,
     IReadOnlySet<string>? Mounts = null,
     IReadOnlyDictionary<string, HashSet<string>>? BarrelMounts = null,
-    bool LaserRail = false);
+    bool LaserRail = false,
+    IReadOnlyDictionary<string, Dictionary<string, (Vector3 P, Quaternion Q)>>? BarrelTags = null);
 
 /// <summary>
 /// Writes a drop-in MW Base (mg_base) SWEP: lua/weapons/mg_&lt;name&gt;/{shared,animations,customization}.lua plus one
@@ -240,7 +242,7 @@ public static class MwBaseLua
             // the viewmodel itself (no model to parent to), so shared parts bonemerge onto the viewmodel directly.
             var carriers = barrels.Where(item => !(category == "muzzles" && weapon.Suppressed?.Contains(item.Token) == true)).ToArray();
             var onBarrel = category != "sights" && weapon.Bodygroups is null && carriers.Length > 0 && carriers.All(item => weapon.BarrelMounts?.GetValueOrDefault(item.Token)?.IsSupersetOf(bones) == true);
-            var classes = present.Select(shared => onBarrel ? BarrelChild(attachments, className, shared, weapon) : shared);
+            var classes = present.Select(shared => onBarrel ? BarrelChild(attachments, className, shared, weapon, carriers.Select(item => item.Token).ToArray()) : shared);
             // Integrally suppressed barrels exclude Muzzle Devices themselves (Excluded), like smgbarcust excludes Grips.
             yield return "    {" + string.Join(", ", classes.Prepend(EmptyClass(category)).Select(item => $"\"{item}\"")) + "},";
         }
@@ -252,29 +254,76 @@ public static class MwBaseLua
     };
 
     /// <summary>
-    /// A copy of a shared attachment parented to the weapon's barrel (BonemergeToCategory Barrels). Like the official
-    /// akilo47 grips/lasers it also sets what the shared class cannot know: the left-hand grip pose, and the receiver's
-    /// laser rail cover ("laser" bodygroup, hidden without a laser). MountOffset is a hand-tuned fit-up: CoD16-era shared
-    /// models never sit right on every CoD20 handguard, and every grip of a slot shares one barrel tag, so it is applied
-    /// per attachment by moving the barrel's mount bone (ManipulateBonePosition, barrel space) while it is equipped.
+    /// A copy of a shared attachment placed on the weapon's barrel. Like the official akilo47 grips/lasers it also sets
+    /// what the shared class cannot know: the left-hand grip pose, and the receiver's laser rail cover ("laser" bodygroup,
+    /// hidden without a laser). Grips and lasers are placed by an ATTACHMENT.VElement on tag_barrel_attach (MW Base's own
+    /// per-attachment offset, see mcxs_tac): the default barrel's mount tag goes in Position/Angles, every other barrel whose
+    /// tag differs gets an Offsets entry. Unlike bonemerging onto the shared mount tag, each grip/laser can be nudged on its
+    /// own, as CoD16-era shared models never sit right on every CoD20 handguard. Muzzles keep BonemergeToCategory Barrels.
     /// </summary>
-    private static string BarrelChild(string attachments, string className, string shared, MwBaseWeapon weapon)
+    private static string BarrelChild(string attachments, string className, string shared, MwBaseWeapon weapon, string[] barrels)
     {
         var child = $"{className}_{shared["att_vm_".Length..]}";
         var mount = SharedAttachments.SelectMany(set => set.Entries).First(entry => entry.Class == shared).Bone;
-        var text = new StringBuilder($"ATTACHMENT.Base = \"{shared}\"\nATTACHMENT.BonemergeToCategory = {{\"Barrels\"}}\n");
+        var text = new StringBuilder($"ATTACHMENT.Base = \"{shared}\"\n");
         // The rail cover is CoD's cylinder-laser ring mount: box lasers (laser01-03) clamp on the handguard without it.
         if (BaseOf(shared) == "att_laser" && weapon.LaserRail && shared.Contains("cylinder", StringComparison.Ordinal))
             text.Append("ATTACHMENT.Bodygroups = {\n    [\"laser\"] = 1\n}\n");
-        text.Append($"-- Fit-up on this weapon's barrels in inches (x forward, y left, z up); edit, then lua_refresh / re-equip.\nATTACHMENT.MountOffset = Vector(0, 0, 0)\n");
-        text.Append("\nlocal BaseClass = GetAttachmentBaseClass(ATTACHMENT.Base)\n");
+        var tags = barrels.Select(token => (token, Tag: weapon.BarrelTags?.GetValueOrDefault(token)?.GetValueOrDefault(mount))).ToArray();
+        // Muzzles stay bonemerged children of the barrel: mg_viewmodel:FindAttachment("muzzle") takes the deepest child
+        // with that attachment, so a VElement muzzle (a sibling of the barrel) lost to the barrel's bare-tip muzzle.
+        if (BaseOf(shared) is "att_grip" or "att_laser" && tags.FirstOrDefault().Tag is { } home)
+        {
+            var (position, angles) = VElementOf(home);
+            text.Append($"-- Placed on the barrel tag (MW Base VElement): tune Position/Angles per attachment, then re-equip.\n"
+                + $"ATTACHMENT.VElement = {{\n    Bone = \"tag_barrel_attach\",\n    Position = {position},\n    Angles = {angles}");
+            var offsets = tags.Skip(1).Where(item => item.Tag is { } tag && (Vector3.Distance(tag.P, home.P) > 1e-3f || MathF.Abs(Quaternion.Dot(tag.Q, home.Q)) < 0.99999f))
+                .Select(item => (Class: $"{className}_{Identifier(item.token)}", Delta: VElementOf(item.Tag!.Value, home))).ToArray();
+            if (offsets.Length > 0)
+                text.Append(",\n    Offsets = {\n" + string.Join(",\n", offsets.Select(item => $"        [\"{item.Class}\"] = {{{item.Delta.Position}, {item.Delta.Angles}}}")) + "\n    }");
+            text.Append("\n}\n");
+        }
+        else text.Append("ATTACHMENT.BonemergeToCategory = {\"Barrels\"}\n");
         if (GripPose(shared, weapon.GripLayers) is { } pose)
-            text.Append($"\nfunction ATTACHMENT:PostProcess(weapon)\n    BaseClass.PostProcess(self, weapon)\n    weapon:SetGripPoseParameter(\"{pose}\")\nend\n");
-        // shortcut: the offset stays on the barrel bone after unequipping; harmless while only this slot uses that tag.
-        text.Append($"\nfunction ATTACHMENT:Appearance(model, category)\n    BaseClass.Appearance(self, model, category)\n    if (category != \"Barrels\" || !IsValid(model)) then return end\n"
-            + $"    local bone = model:LookupBone(\"{mount}\")\n    if (bone != nil) then model:ManipulateBonePosition(bone, self.MountOffset) end\nend\n");
+            text.Append($"\nlocal BaseClass = GetAttachmentBaseClass(ATTACHMENT.Base)\n\nfunction ATTACHMENT:PostProcess(weapon)\n    BaseClass.PostProcess(self, weapon)\n    weapon:SetGripPoseParameter(\"{pose}\")\nend\n");
         LuaFile.Write(AttachmentFile(attachments, BaseOf(shared), child), text.ToString());
         return child;
+    }
+
+    /// <summary>
+    /// MW Base VElement fields for a tag in tag_barrel_attach space (inches). SWEP:MoveVElement turns Angle() by roll about
+    /// forward, then by Angles.y about the new right, then by Angles.p about the new up, so the frame is
+    /// Rx(r) * Ry(-y) * Rz(p) (checked in Gmod 2026-10-17: y = 30 gives QAngle pitch -30, p = 30 gives yaw 30), and Position
+    /// is x along the final right, y along forward, z along up.
+    /// </summary>
+    internal static (string Position, string Angles) VElementOf((Vector3 P, Quaternion Q) tag, (Vector3 P, Quaternion Q)? relativeTo = null)
+    {
+        var (p, q) = tag;
+        if (relativeTo is { } baseTag)
+        {
+            // Offsets add to Position/Angles component-wise; report the difference of the two VElements.
+            var (bp, ba) = VElementParts(baseTag);
+            var (tp, ta) = VElementParts(tag);
+            return (Vec(tp - bp), Ang(ta - ba));
+        }
+        var (position, angles) = VElementParts((p, q));
+        return (Vec(position), Ang(angles));
+        static string Vec(Vector3 v) => string.Create(CultureInfo.InvariantCulture, $"Vector({v.X:0.####}, {v.Y:0.####}, {v.Z:0.####})");
+        static string Ang(Vector3 a) => string.Create(CultureInfo.InvariantCulture, $"Angle({a.X:0.##}, {a.Y:0.##}, {a.Z:0.##})");
+    }
+
+    /// <summary>VElement Position (x right, y forward, z up, in the rotated frame) and Angles (p, y, r) for a barrel-space tag.</summary>
+    private static (Vector3 Position, Vector3 Angles) VElementParts((Vector3 P, Quaternion Q) tag)
+    {
+        var m = Matrix4x4.CreateFromQuaternion(Quaternion.Normalize(tag.Q));
+        // Rows are the tag's forward / left / up in barrel space; as columns they form R = Rx(a) * Ry(b) * Rz(c).
+        Vector3 forward = new(m.M11, m.M12, m.M13), left = new(m.M21, m.M22, m.M23), up = new(m.M31, m.M32, m.M33);
+        var b = MathF.Asin(Math.Clamp(up.X, -1, 1));
+        var a = MathF.Atan2(-up.Y, up.Z);
+        var c = MathF.Atan2(-left.X, forward.X);
+        const float Deg = 180 / MathF.PI;
+        var position = new Vector3(-Vector3.Dot(tag.P, left), Vector3.Dot(tag.P, forward), Vector3.Dot(tag.P, up));
+        return (position, new Vector3(c * Deg, -b * Deg, a * Deg));
     }
 
     /// <summary>
