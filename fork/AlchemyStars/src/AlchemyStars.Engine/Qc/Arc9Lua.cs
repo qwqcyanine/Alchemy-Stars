@@ -30,7 +30,12 @@ public sealed record Arc9Weapon(
     bool Icon = false,
     IReadOnlyDictionary<string, System.Numerics.Vector3>? MuzzleOffsets = null,
     IReadOnlyDictionary<string, string>? GripPoses = null,
-    IReadOnlyDictionary<string, (System.Numerics.Vector3 P, System.Numerics.Quaternion Q)>? MountPoses = null);
+    IReadOnlyDictionary<string, (System.Numerics.Vector3 P, System.Numerics.Quaternion Q)>? MountPoses = null,
+    string Category = "",
+    string? Description = null,
+    IReadOnlyDictionary<string, string>? CodPartDescriptions = null,
+    IReadOnlyList<(string Key, string Value)>? Trivia = null,
+    CodMeleeSet? Melee = null);
 
 /// <summary>
 /// Writes a standalone ARC9 SWEP (lua/weapons/arc9_&lt;name&gt;.lua, layout of ARC9-COD2019's arc9_cod2019_sm_mp5) and a
@@ -49,7 +54,7 @@ public static partial class Arc9Lua
         ("reload_fast", ["reload_fast"]), ("reload_fast_empty", ["reload_empty_fast"]),
         ("ready", ["draw_first", "draw"]), ("draw", ["draw"]), ("holster", ["holster"]),
         ("idle_sprint", ["idle_sprint"]), ("enter_sprint", ["sprint_in"]), ("exit_sprint", ["sprint_out"]),
-        ("super_sprint_in", ["super_sprint_in"]), ("super_sprint_out", ["super_sprint_out"]),
+        ("super_sprint_idle", ["super_sprint_idle"]), ("super_sprint_in", ["super_sprint_in"]), ("super_sprint_out", ["super_sprint_out"]),
         ("inspect", ["inspect"]), ("firemode_1", ["semi_off"]), ("firemode_2", ["semi_on"]),
         ("bash", ["melee_hit_01", "melee_hit_02", "melee_hit_03"]),
     ];
@@ -112,10 +117,10 @@ public static partial class Arc9Lua
                     .AppendLine($"ATT.PrintName = \"{name}\"")
                     .AppendLine($"ATT.CompactName = \"{name}\"")
                     .Append(weapon.PartIcons?.GetValueOrDefault(token) is { } icon ? $"ATT.Icon = Material(\"{icon}\")\n" : "")
-                    .AppendLine("ATT.Description = [[]]")
+                    .AppendLine($"ATT.Description = \"{MwBaseLua.LuaString(weapon.CodPartDescriptions?.GetValueOrDefault(token) ?? "")}\"")
                     .AppendLine("ATT.AutoStats = true")
                     .AppendLine("ATT.Free = true")
-                    .AppendLine("ATT.MenuCategory = \"ARC9 - Generated\"")
+                    .AppendLine($"ATT.MenuCategory = \"{MwBaseLua.LuaString(Category(weapon))}\"")
                     .AppendLine($"ATT.Category = {{\"{category}\"}}")
                     .AppendLine($"ATT.ActivateElements = {{\"{element}\"}}");
                 if (capacity is { } rounds) atts.AppendLine($"ATT.ClipSize = {rounds}"); // arc9_modern_warfare_classic mags use the bare stat
@@ -134,16 +139,18 @@ public static partial class Arc9Lua
         var slotCount = weapon.Groups.Count;
         var suppressedElements = weapon.Groups.SelectMany(parts => parts.Skip(1)).Where(part => weapon.Suppressed?.Contains(part.Token) == true)
             .Select(part => $"\"{className}_{MwBaseLua.Identifier(part.Token)}\"").ToArray();
-        var mountShifts = new List<(string Category, System.Numerics.Vector3 Offset)>();
+        var mountShifts = new List<(string Category, System.Numerics.Vector3 Offset, string? Ang)>();
         int? sightSlot = null;
         foreach (var pack in (weapon.PackParts ?? []).Where(part => packMounts.Contains(part.Mount) && !ownMounts.Contains(part.Mount)).GroupBy(part => part.Category))
         {
             var mounts = pack.Select(part => part.Mount).Distinct(StringComparer.OrdinalIgnoreCase).Order(StringComparer.Ordinal).ToArray();
+            var shared = SharedSlots.TryGetValue(pack.Key, out var match) ? match : default((string Category, string Anchor, System.Numerics.Vector3 Pos, string? Ang)?);
+            var categories = mounts.Select(mount => $"cod_{mount}").Concat(shared is { } extra ? [extra.Category] : Array.Empty<string>()).ToArray();
             slotCount++;
             slots.AppendLine("    {")
                 .AppendLine($"        PrintName = \"{PackSlotNames.GetValueOrDefault(pack.Key, pack.Key)}\",")
-                .AppendLine(mounts.Length == 1 ? $"        Category = \"cod_{mounts[0]}\","
-                    : "        Category = {\n" + string.Concat(mounts.Select(mount => $"            \"cod_{mount}\",\n")) + "        },")
+                .AppendLine(categories.Length == 1 ? $"        Category = \"{categories[0]}\","
+                    : "        Category = {\n" + string.Concat(categories.Select(category => $"            \"{category}\",\n")) + "        },")
                 .AppendLine($"        Bone = \"{mounts[0]}\",")
                 .AppendLine("        Pos = Vector(0, 0, 0),");
             // Integrally suppressed barrels take no muzzle device.
@@ -156,20 +163,53 @@ public static partial class Arc9Lua
             {
                 if (!poses.TryGetValue(mount, out var pose)) continue;
                 var offset = System.Numerics.Vector3.Transform(pose.P - home.P, System.Numerics.Quaternion.Conjugate(home.Q));
-                if (offset.Length() > 0.01f) mountShifts.Add(($"cod_{mount}", offset));
+                if (offset.Length() > 0.01f) mountShifts.Add(($"cod_{mount}", offset, null));
+            }
+            // ARC9_Cod2019_Shared parts are placed like ARC9-COD2019 places them: its slot Pos/Ang from the matching CoD tag.
+            if (shared is { } slot && poses.TryGetValue(slot.Anchor, out var anchor))
+            {
+                var frame = System.Numerics.Quaternion.Conjugate(home.Q);
+                var offset = System.Numerics.Vector3.Transform(anchor.P - home.P, frame)
+                    + System.Numerics.Vector3.Transform(System.Numerics.Vector3.Transform(slot.Pos, anchor.Q), frame);
+                if (offset.Length() > 0.01f || slot.Ang is not null) mountShifts.Add((slot.Category, offset, slot.Ang));
             }
         }
+        // MW2019-style perks (PerksLua, shared by every generated weapon); ARC9-COD2019's perks set the same elements.
+        var superSprint = weapon.Sequences.ContainsKey("super_sprint_idle");
+        var fastReload = weapon.Sequences.ContainsKey("reload_fast");
+        slots.AppendLine("    {")
+            .AppendLine("        PrintName = \"Perk\",")
+            .AppendLine("        Category = {\"arc9_cod_perks\"},")
+            .AppendLine("        Bone = \"tag_weapon\",")
+            .AppendLine("        Pos = Vector(0, 0, 0),")
+            .AppendLine("    },");
         elements.AppendLine("}");
         slots.AppendLine("}");
 
         var translate = new StringBuilder();
+        if (superSprint)
+            translate.AppendLine().AppendLine("local superSprintAnims = {")
+                .AppendLine("    [\"idle_sprint\"] = \"super_sprint_idle\",")
+                .AppendLine("    [\"enter_sprint\"] = \"super_sprint_in\",")
+                .AppendLine("    [\"exit_sprint\"] = \"super_sprint_out\",")
+                .AppendLine("}");
         // ARC9 keeps the base clip when the translated name has no animation (sh_animtranslate.lua HasAnimation check).
-        if (magElements.Count > 0)
+        if (fastReload)
+            translate.AppendLine().AppendLine("local fastAnims = {")
+                .AppendLine("    [\"reload\"] = \"reload_fast\",")
+                .AppendLine("    [\"reload_empty\"] = \"reload_fast_empty\",")
+                .AppendLine("}");
+        if (magElements.Count > 0 || superSprint || fastReload)
         {
             translate.AppendLine().AppendLine("SWEP.Hook_TranslateAnimation = function(self, anim)")
                 .AppendLine("    local elements = self:GetElements()").AppendLine();
+            if (superSprint)
+                translate.AppendLine("    if elements[\"perk_super_sprint\"] and superSprintAnims[anim] then return superSprintAnims[anim] end").AppendLine();
+            // Sleight of Hand picks the CoD fast clip; the magazine suffix then applies on top of it when that variant exists.
+            if (fastReload)
+                translate.AppendLine("    if elements[\"perk_speedreload\"] and fastAnims[anim] and self:HasAnimation(fastAnims[anim], true) then anim = fastAnims[anim] end").AppendLine();
             foreach (var (element, variant) in magElements)
-                translate.AppendLine($"    if elements[\"{element}\"] then return anim .. \"_{variant}\" end");
+                translate.AppendLine($"    if elements[\"{element}\"] and self:HasAnimation(anim .. \"_{variant}\", true) then return anim .. \"_{variant}\" end");
             translate.AppendLine().AppendLine("    return anim").AppendLine("end");
         }
         // Runs every DoBodygroups on the VM and WM; offsets are in tag_silencer's parent frame (ManipulateBonePosition space).
@@ -184,11 +224,17 @@ public static partial class Arc9Lua
         if (muzzleMoves.Count > 0 || sightSlot is not null)
         {
             translate.AppendLine().AppendLine("SWEP.Hook_ModifyBodygroups = function(self, data)").AppendLine("    local mdl = data.model");
-            // Optics hide the receiver's iron sights ("tag_sight" bodygroup, WriteMeshes).
+            // Optics hide the receiver's iron sights ("tag_sight" bodygroup, WriteMeshes). The front sight is part of each
+            // barrel mesh (weighted to tag_sight_on2), so it is collapsed instead; DoBodygroups resets bone scales before this hook.
             if (sightSlot is { } slot)
-                translate.AppendLine("    local sight = mdl:FindBodygroupByName(\"tag_sight\")").AppendLine()
+                translate.AppendLine($"    local optic = self.Attachments[{slot}].Installed")
+                    .AppendLine("    local sight = mdl:FindBodygroupByName(\"tag_sight\")").AppendLine()
                     .AppendLine("    if sight >= 0 then")
-                    .AppendLine($"        mdl:SetBodygroup(sight, self.Attachments[{slot}].Installed and 1 or 0)")
+                    .AppendLine("        mdl:SetBodygroup(sight, optic and 1 or 0)")
+                    .AppendLine("    end").AppendLine()
+                    .AppendLine("    local front = mdl:LookupBone(\"tag_sight_on2\")")
+                    .AppendLine("    if optic and front then")
+                    .AppendLine("        mdl:ManipulateBoneScale(front, vector_origin)")
                     .AppendLine("    end");
             if (muzzleMoves.Count > 0)
                 translate.AppendLine().AppendLine("    local bone = mdl:LookupBone(\"tag_silencer\")").AppendLine("    if not bone then return end").AppendLine()
@@ -204,20 +250,57 @@ public static partial class Arc9Lua
             // bonemerged parts, upgrade if a merged mount ever turns or a world model is scaled.
             translate.AppendLine().AppendLine("-- Merged slots: each pack part sits on its own tag, offset from the slot bone in that bone's frame.")
                 .AppendLine("local mountOffsets = {");
-            foreach (var (category, offset) in mountShifts)
-                translate.AppendLine($"    [\"{category}\"] = {LuaVector(offset)},");
+            foreach (var (category, offset, ang) in mountShifts)
+                translate.AppendLine(ang is null ? $"    [\"{category}\"] = {{ pos = {LuaVector(offset)} }},"
+                    : $"    [\"{category}\"] = {{ pos = {LuaVector(offset)}, ang = {ang} }},");
             translate.AppendLine("}").AppendLine()
                 .AppendLine("SWEP.Hook_GetAttachmentPos = function(self, data)")
-                .AppendLine("    local offset = data.atttbl and mountOffsets[data.atttbl.Category]")
+                .AppendLine("    local category = data.atttbl and data.atttbl.Category")
+                .AppendLine("    if istable(category) then category = category[1] end").AppendLine()
+                .AppendLine("    local offset = category and mountOffsets[category]")
                 .AppendLine("    if not offset then return end").AppendLine()
-                .AppendLine("    data.pos = LocalToWorld(offset, angle_zero, data.pos, data.ang)").AppendLine()
+                .AppendLine("    data.pos, data.ang = LocalToWorld(offset.pos, offset.ang or angle_zero, data.pos, data.ang)").AppendLine()
                 .AppendLine("    return data").AppendLine("end");
         }
         File.WriteAllText(Path.Combine(root, "weapons", className + ".lua"),
             Header(weapon, className, defaultMag, defaults.ToString()) + "\n" + Animations(weapon.Sequences, weapon.Sounds ?? [], weapon.MagSwapFrames ?? new Dictionary<string, int>(),
                 magElements.Select(item => item.Variant).Distinct().ToArray()) + translate + "\n" + elements + "\n" + slots);
         File.WriteAllText(Path.Combine(root, "arc9", "common", "attachments_bulk", className + "_atts.lua"), atts.ToString());
+        File.WriteAllText(Path.Combine(root, "arc9", "common", "attachments_bulk", "arc9_cod_perks.lua"), PerksLua(Category(weapon)));
         return root;
+    }
+
+    // Values from ARC9-COD2019 mw19_perks.lua (non-Warzone). Icons are borrowed from it when it is installed.
+    private static string PerksLua(string menuCategory)
+    {
+        var perks = new[]
+        {
+            ("soh", "Sleight of Hand", "Training in reloading faster when under pressure.", "cod2019_perks_soh",
+                "ATT.ActivateElements = {\"perk_speedreload\"}\nATT.CustomPros = {\n    [ARC9:GetPhrase(\"autostat.reloadtime\")] = \"+20%\"\n}"),
+            ("speedmelee", "Speed Melee", "Training in executing melee maneuvers with great speed.", "cod2019_perks_fastmelee",
+                "ATT.ActivateElements = {\"perk_speedmelee\"}\nATT.BashSpeedMult = 1.15"),
+            ("heavyhitter", "Heavy Hitter", "Melee produces greater stun/damage on targets.", "cod2019_perks_heavyhitter",
+                "ATT.ActivateElements = {\"perk_heavyhitter\"}\nATT.BashDamageMult = 1.2"),
+            ("super_sprint", "Tactical Sprint", "Sprint faster with the weapon held one-handed.", "cod2019_perks_supersprint",
+                "ATT.ActivateElements = {\"perk_super_sprint\"}\nATT.CamQCA_MultSprint = 0.25\nATT.SpeedAddSprint = 0.2\nATT.SprintToFireTimeMult = 1.1"),
+        };
+        var lua = new StringBuilder("-- Generated by Alchemy Stars: MW2019-style perks shared by every generated ARC9 weapon.\nlocal ATT\n\n")
+            .AppendLine("local function icon(name)")
+            .AppendLine("    local path = \"entities/attachs/\" .. name .. \".png\"")
+            .AppendLine("    return file.Exists(\"materials/\" .. path, \"GAME\") and Material(path, \"mips smooth\") or nil")
+            .AppendLine("end").AppendLine();
+        foreach (var (id, name, description, icon, stats) in perks)
+            lua.AppendLine("ATT = {}\n")
+                .AppendLine($"ATT.PrintName = \"{name}\"")
+                .AppendLine($"ATT.Description = [[{description}]]")
+                .AppendLine($"ATT.Icon = icon(\"{icon}\")")
+                .AppendLine($"ATT.MenuCategory = \"{MwBaseLua.LuaString(menuCategory)}\"")
+                .AppendLine("ATT.AutoStats = true")
+                .AppendLine("ATT.Free = true")
+                .AppendLine("ATT.Category = \"arc9_cod_perks\"")
+                .AppendLine(stats)
+                .AppendLine($"\nARC9.LoadAttachment(ATT, \"arc9_cod_perk_{id}\")\n");
+        return lua.ToString();
     }
 
     private static string Animations(IReadOnlyDictionary<string, (int Frames, int? MagFrame, string Body)> sequences, IReadOnlyCollection<string> resolved, IReadOnlyDictionary<string, int> magSwaps,
@@ -244,7 +327,7 @@ public static partial class Arc9Lua
                 if (magSwaps.TryGetValue(present[0], out var swap)) text.AppendLine($"        MagSwapTime = {Number(swap / Fps)},");
             }
             else if (key is "ready" or "draw" or "inspect") text.AppendLine("        MinProgress = 0.8,\n        FireASAP = true,");
-            var ik = IkTimeline(body, frames);
+            var ik = SuperSprintIk.TryGetValue(key, out var fixedIk) ? [.. fixedIk] : IkTimeline(body, frames);
             if (ik.Count > 0)
                 text.AppendLine("        IKTimeLine = {\n" + string.Concat(ik.Select(item => $"            {{t = {Number(item.T)}, lhik = {item.L}, rhik = {item.R}}},\n")) + "        },");
             // ARC9 suppresses QC sound events, so foley plays from here. Aliases registered by the generated
@@ -256,6 +339,14 @@ public static partial class Arc9Lua
         }
         return text.AppendLine("}").ToString();
     }
+
+    // ARC9-COD2019 (arc9_cod2019_sm_mp5) timelines: the left hand lets go of the gun while tactical sprinting.
+    private static readonly Dictionary<string, (float T, int L, int R)[]> SuperSprintIk = new()
+    {
+        ["super_sprint_idle"] = [(0, 0, 1)],
+        ["super_sprint_in"] = [(0, 1, 1), (0.1f, 1, 1), (1, 0, 1)],
+        ["super_sprint_out"] = [(0, 0, 1), (0.1f, 0, 1), (1, 1, 1)],
+    };
 
     /// <summary>MW Base IK events (9011 left / 9021 right, "1" on) as an ARC9 IKTimeLine; t is the fraction of the clip.</summary>
     private static List<(float T, int L, int R)> IkTimeline(string body, int frames)
@@ -285,11 +376,17 @@ public static partial class Arc9Lua
         SWEP.Base = "arc9_base"
 
         SWEP.Spawnable = true
-        SWEP.Category = "ARC9 - Generated"
+        SWEP.Category = "{{{MwBaseLua.LuaString(Category(weapon))}}}"
         SWEP.SubCategory = "{{{MwBaseLua.LuaString(SubCategory(weapon))}}}"
         SWEP.PrintName = "{{{MwBaseLua.LuaString(weapon.PrintName.Length > 0 ? weapon.PrintName : weapon.Name)}}}"
         SWEP.Class = "{{{MwBaseLua.LuaString(SubCategory(weapon) is var group && group.EndsWith('s') ? group[..^1] : SubCategory(weapon))}}}"
-        SWEP.Description = [[Converted from Call of Duty CAST assets.]]
+        SWEP.Description = "{{{MwBaseLua.LuaString(weapon.Description ?? "Converted from Call of Duty CAST assets.")}}}"
+        SWEP.Trivia = {{{{string.Concat((weapon.Trivia ?? []).Select(row => $"\n    [\"{MwBaseLua.LuaString(row.Key)}\"] = \"{MwBaseLua.LuaString(row.Value)}\","))}}}
+        }
+        SWEP.Credits = {
+            ["Assets"] = "Activision/Infinity Ward",
+            ["Converter"] = "Alchemy Stars",
+        }
         {{{(weapon.Icon ? "SWEP.EntitySelectIcon = true -- materials/entities/" + className + ".png, also the spawn menu icon" : "")}}}
 
         SWEP.ViewModel = "{{{weapon.ViewModel}}}"
@@ -326,6 +423,8 @@ public static partial class Arc9Lua
         SWEP.SupplyLimit = 6
         SWEP.ReloadInSights = true
         {{{BulletBones(weapon.BulletBones)}}}
+        -- The offhand magazine idles far below the gun (out of the viewmodel's sight, at the world model's feet).
+        SWEP.HideBones = { "j_mag2" }
 
         -------------------------- FIREMODES
 
@@ -358,7 +457,14 @@ public static partial class Arc9Lua
         SWEP.SpreadAddSights = -SWEP.Spread * 1.4
         SWEP.AimDownSightsTime = {{{(weapon.CodStats is { } ads && ads.AdsMs > 0 ? Number(ads.AdsMs / 1000f) : "0.3")}}}
         SWEP.SprintToFireTime = 0.3
+
+        -------------------------- MELEE
+
+        -- arc9_cod2019_sm_mp5 timing: the next bash is allowed Pre + Post after the last (arc9_base default 0.5 + 0.5).
         SWEP.Bash = true
+        SWEP.PrimaryBash = false
+        SWEP.PreBashTime = 0.2
+        SWEP.PostBashTime = 0.2{{{MeleeSoundLines(weapon.Melee)}}}
 
         -------------------------- POSITIONS
 
@@ -373,6 +479,11 @@ public static partial class Arc9Lua
         SWEP.ActiveAng = Angle(0, 0, 0)
         SWEP.SprintPos = Vector(0, 0, 0)
         SWEP.SprintAng = Angle(0, 0, 0)
+        SWEP.SprintVerticalOffset = false
+        SWEP.SprintMidPoint = {
+            Pos = Vector(0, 0, 0),
+            Ang = Angle(0, 0, 0),
+        }
         SWEP.CustomizePos = Vector(13, 35, 4)
         SWEP.CustomizeAng = Angle(90, 0, 0)
 
@@ -457,19 +568,23 @@ public static partial class Arc9Lua
 
     /// <summary>
     /// ADS shot mixes swap in through HookP_TranslateSound, because DoShootSounds reads ShootSound from ARC9's static
-    /// cache and a ShootSoundSights stat would never follow the sight state. The outdoor tail rides on LayerSound; the
-    /// empty indoor/suppressed layers make ARC9 fade it out indoors and mute it with a suppressor, because CoD's interior
-    /// and suppressed atmo files are shared assets the weapon export does not include.
+    /// cache and a ShootSoundSights stat would never follow the sight state. The pre-mixed shot is dry, so the body comes
+    /// from the same shared reflection/atmo layers MW Base's Reverb plays (Reflection_AR + Atmo_SMG), under the names the
+    /// ARC9 COD2019 pack registers them as (Layer_* / Distant_*). The weapon's own outdoor atmo tail replaces Distant_SMG.
     /// </summary>
     private static string Arc9FireLayers(CodFireSet? fire)
     {
-        var lines = new List<string>();
-        if (fire?.Tail is { } tail)
+        var lines = new List<string>
         {
-            lines.Add($"SWEP.LayerSound = \"{tail}\"");
-            lines.Add("SWEP.LayerSoundIndoor = \"\"");
-            lines.Add("SWEP.LayerSoundSilenced = \"\"");
-        }
+            "SWEP.LayerSound = \"Layer_AR.Outside\"",
+            "SWEP.LayerSoundIndoor = \"Layer_AR.Inside\"",
+            "SWEP.LayerSoundSilenced = \"Layer_ARSUP.Outside\"",
+            "SWEP.LayerSoundSilencedIndoor = \"Layer_ARSUP.Inside\"",
+            $"SWEP.DistantShootSound = \"{fire?.Tail ?? "Distant_SMG.Outside"}\"",
+            "SWEP.DistantShootSoundIndoor = \"Distant_SMG.Inside\"",
+            "SWEP.DistantShootSoundSilenced = \"Distant_SMG_Sup.Outside\"",
+            "SWEP.DistantShootSoundSilencedIndoor = \"Distant_AR_Sup.Inside\"",
+        };
 
         var swaps = new[] { (fire?.Fire, fire?.FireAds), (fire?.Suppressed, fire?.SuppressedAds) }
             .Where(pair => pair.Item1 is not null && pair.Item2 is not null)
@@ -496,14 +611,32 @@ public static partial class Arc9Lua
         return string.Join("\n", lines);
     }
 
+    private static string MeleeSoundLines(CodMeleeSet? melee) => melee is null ? "" : string.Concat(
+        new[] { ("MeleeSwingSound", melee.Swing), ("MeleeHitSound", melee.Flesh), ("BackstabSound", melee.Flesh), ("MeleeHitWallSound", melee.World) }
+            .Where(row => row.Item2 is not null).Select(row => $"\nSWEP.{row.Item1} = \"{row.Item2}\""));
+
     private const string GripPoseLines = "local grip\n"
         + "    for _, slot in ipairs(self.Attachments) do\n"
         + "        grip = grip or gripPoses[slot.Installed or \"\"]\n"
         + "    end\n\n"
-        // The grip layer offsets the left hand from the foregrip, so it must fade out while the reload moves the hand to the mag.
-        + "    self.CodGripBlend = math.Approach(self.CodGripBlend or 1, self:GetReloading() and 0 or 1, FrameTime() * 6)\n"
+        // The grip layer offsets the left hand from the foregrip, so it follows the left-hand IK timeline of whatever anim
+        // set one last (reload, inspect, sprint; ARC9's stages, linear): a flat ramp after GetReloading() ended showed the
+        // idle hand first, and gating on reloads left the offset bending the hand off the gun during inspects.
+        + "    local blend = 1\n"
+        + "    local iktl = (self.Animations[self:GetIKAnimation() or \"\"] or {}).IKTimeLine\n"
+        + "    if iktl and #iktl > 0 then\n"
+        + "        local t = math.Clamp((CurTime() - self:GetIKTimeLineStart()) / math.max(self:GetIKTime(), 0.001), 0, 1)\n"
+        + "        blend = iktl[#iktl].lhik or 1\n"
+        + "        for i, stage in ipairs(iktl) do\n"
+        + "            if stage.t > t then\n"
+        + "                local prev = iktl[i - 1] or { t = 0, lhik = 0 }\n"
+        + "                blend = Lerp((t - prev.t) / math.max(stage.t - prev.t, 0.001), prev.lhik or 0, stage.lhik or 0)\n"
+        + "                break\n"
+        + "            end\n"
+        + "        end\n"
+        + "    end\n"
         + "    for _, layer in pairs(gripPoses) do\n"
-        + "        ent:SetPoseParameter(layer, layer == grip and self.CodGripBlend or 0)\n"
+        + "        ent:SetPoseParameter(layer, layer == grip and blend or 0)\n"
         + "    end\n\n    ";
 
     private static string Number(float value) => value.ToString("0.###", CultureInfo.InvariantCulture);
@@ -514,8 +647,18 @@ public static partial class Arc9Lua
     // Spread 0.03); retune here if ARC9 guns feel off against COD2019's.
     private const float M4Vertical = 51.5f, M4Kick = 24, M4Hip = 7.5f, Cod2019M4Kick = 2, Cod2019M4Spread = 0.03f;
 
+    // Pack category -> ARC9_Cod2019_Shared category, the CoD tag ARC9-COD2019 mounts it on, and its usual slot Pos/Ang there.
+    // shortcut: one Pos per category (the MP5-family value); per-gun tuning lives in the weapon Lua if a part sits off.
+    private static readonly Dictionary<string, (string Category, string Anchor, System.Numerics.Vector3 Pos, string? Ang)> SharedSlots = new()
+    {
+        ["sights"] = ("cod2019_optic", "tag_holo", new(1.5f, 0, -0.1f), null),
+        ["muzzles"] = ("cod2019_muzzle", "tag_silencer", System.Numerics.Vector3.Zero, null),
+        ["grips"] = ("cod2019_grip", "tag_grip_attach", new(-2.5f, 0, 0), "Angle(0, 0, 180)"),
+    };
+
     private static readonly Dictionary<string, string> PackSlotNames = new() { ["sights"] = "Optic", ["muzzles"] = "Muzzle", ["grips"] = "Underbarrel" };
 
+    private static string Category(Arc9Weapon weapon) => weapon.Category.Length > 0 ? weapon.Category : "ARC9 - Generated";
     private static string SubCategory(Arc9Weapon weapon) => weapon.SubCategory.Length > 0 ? weapon.SubCategory : MwBaseLua.SubCategoryOf(weapon.Name);
 
     /// <summary>CoD's damage bands (Damage near->far, RangeM band ends, 0 = unused) as (end in m, damage); the last band never ends.</summary>

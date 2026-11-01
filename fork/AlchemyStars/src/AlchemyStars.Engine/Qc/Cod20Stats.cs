@@ -33,6 +33,7 @@ public sealed partial class Cod20Stats
     private readonly Dictionary<ulong, string> localize = [];
     private readonly Dictionary<string, string> reticlePreviews = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> blueprintNames = new(StringComparer.OrdinalIgnoreCase);
+    private string folder = "";
 
     /// <summary>Reads cod20_weapons.json (the file or the folder holding it); null when the path is empty or missing.</summary>
     public static Cod20Stats? Load(string path)
@@ -41,7 +42,7 @@ public sealed partial class Cod20Stats
         var file = Directory.Exists(path) ? Path.Combine(path, "cod20_weapons.json") : path;
         if (!File.Exists(file)) return null;
         using var json = JsonDocument.Parse(File.ReadAllBytes(file));
-        var stats = new Cod20Stats();
+        var stats = new Cod20Stats { folder = Path.GetDirectoryName(file)! };
         var root = json.RootElement;
         foreach (var item in root.GetProperty("weapons").EnumerateArray())
         {
@@ -106,6 +107,38 @@ public sealed partial class Cod20Stats
     /// lowercased key with IW's offset basis (dump tools/loc.py), stored with or without the top bit.
     /// </summary>
     public string? Name(string attachment) => Lookup("jup_attachments/" + attachment) ?? Lookup("attachments/" + attachment);
+
+    /// <summary>CoD description of the weapon (JUP_WEAPON/JUP_JP03_SM_PMIKE_DESC), or null.</summary>
+    public string? Description(Weapon weapon) => Lookup($"jup_weapon/{weapon.Prefix}desc");
+
+    // shortcut: magazine-name ammo tokens only; unknown tokens give no caliber, add entries as weapons need them.
+    private static readonly Dictionary<string, string> Calibers = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["9mm"] = "9x19mm", ["9p"] = "9x19mm", ["45acp"] = ".45 ACP", ["556n"] = "5.56x45mm NATO", ["762n"] = "7.62x51mm NATO",
+        ["762s"] = "7.62x39mm", ["762r"] = "7.62x54mmR", ["545"] = "5.45x39mm", ["12g"] = "12 Gauge", ["410g"] = ".410 Bore",
+        ["450b"] = ".450 Bushmaster", ["338lmp"] = ".338 Lapua Magnum", ["50b"] = ".50 BMG", ["58"] = "5.8x42mm",
+    };
+
+    /// <summary>Caliber from the weapon's magazine names (jup_jp03_sm_pmike_mag_20_9mm -> 9x19mm), or null.</summary>
+    public string? Caliber(Weapon weapon) => magazines.Where(m => m.Name.StartsWith(weapon.Prefix, StringComparison.OrdinalIgnoreCase))
+        .Select(m => Calibers.GetValueOrDefault(m.Name[(m.Name.LastIndexOf('_') + 1)..])).FirstOrDefault(c => c is not null);
+
+    /// <summary>
+    /// Manufacturer from data/weapon/&lt;name&gt;.json ($attachment_manufacturer_gerhardwolf). The dump has no key to its display
+    /// string, so it only matches an English string equal to the token ignoring case and punctuation ("Gerhard &amp; Wolff");
+    /// null otherwise rather than a guess.
+    /// </summary>
+    public string? Manufacturer(Weapon weapon)
+    {
+        var file = Path.Combine(folder, "data", "weapon", weapon.Name + ".json");
+        if (!File.Exists(file) || ManufacturerRef().Match(File.ReadAllText(file)) is not { Success: true } match) return null;
+        var token = match.Groups[1].Value.Replace("_", "", StringComparison.Ordinal);
+        static string Plain(string text) => new([.. text.ToLowerInvariant().Where(char.IsAsciiLetterOrDigit)]);
+        return localize.Values.Where(v => v.Length < 40 && Plain(v) is var plain && plain.StartsWith(token, StringComparison.Ordinal) && plain.Length - token.Length <= 1)
+            .OrderBy(v => v.Length).FirstOrDefault();
+    }
+
+    [GeneratedRegex("\\$(?:weapon|attachment)_manufacturer_([a-z0-9_]+)\"")] private static partial Regex ManufacturerRef();
 
     private string? Lookup(string key)
     {

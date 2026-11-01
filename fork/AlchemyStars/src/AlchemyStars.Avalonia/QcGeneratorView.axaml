@@ -20,7 +20,9 @@
               <TextBlock Text="{Binding QcTargetHelp}" Classes="muted" TextWrapping="Wrap" Margin="0,4,0,0" /></StackPanel>
             <StackPanel IsVisible="{Binding QcIsMwBase}"><TextBlock Text="{Binding Text.QcMwLayout}" Classes="field-label" />
               <ComboBox HorizontalAlignment="Stretch" ItemsSource="{Binding QcMwLayoutOptions}" SelectedIndex="{Binding QcMwLayoutIndex, Mode=TwoWay}" AutomationProperties.Name="{Binding Text.QcMwLayout}" /></StackPanel>
-            <StackPanel IsVisible="{Binding QcIsMwBase}"><TextBlock Text="{Binding Text.QcSubCategory}" Classes="field-label" />
+            <StackPanel IsVisible="{Binding !QcIsMwBase}"><TextBlock Text="{Binding Text.QcCategory}" Classes="field-label" TextWrapping="Wrap" />
+              <TextBox Text="{Binding QcCategory}" PlaceholderText="ARC9 - MW2023" AutomationProperties.Name="{Binding Text.QcCategory}" /></StackPanel>
+            <StackPanel><TextBlock Text="{Binding Text.QcSubCategory}" Classes="field-label" />
               <ComboBox HorizontalAlignment="Stretch" ItemsSource="{Binding QcSubCategoryOptions}" SelectedIndex="{Binding QcSubCategoryIndex, Mode=TwoWay}" AutomationProperties.Name="{Binding Text.QcSubCategory}" /></StackPanel>
             <StackPanel Tag="hands" Background="Transparent"><TextBlock Text="{Binding Text.QcHandsFile}" Classes="field-label" />
               <Grid ColumnDefinitions="*,Auto"><TextBox Text="{Binding QcHandsFile}" AutomationProperties.Name="{Binding Text.QcHandsFile}" />
@@ -88,6 +90,13 @@
               </Grid></StackPanel>
             <StackPanel><TextBlock Text="{Binding Text.QcPrintName}" Classes="field-label" TextWrapping="Wrap" />
               <TextBox Text="{Binding QcPrintName}" PlaceholderText="HRM-9" AutomationProperties.Name="{Binding Text.QcPrintName}" /></StackPanel>
+            <StackPanel IsVisible="{Binding !QcIsMwBase}"><TextBlock Text="{Binding Text.QcTrivia}" Classes="field-label" TextWrapping="Wrap" />
+              <Grid ColumnDefinitions="*,6,*" RowDefinitions="Auto,6,Auto">
+                <TextBox Text="{Binding QcTriviaManufacturer}" PlaceholderText="Gerhard &amp; Wolff" AutomationProperties.Name="manufacturer" />
+                <TextBox Grid.Column="2" Text="{Binding QcTriviaCaliber}" PlaceholderText="9x19mm" AutomationProperties.Name="caliber" />
+                <TextBox Grid.Row="2" Text="{Binding QcTriviaCountry}" PlaceholderText="Germany" AutomationProperties.Name="country" />
+                <TextBox Grid.Row="2" Grid.Column="2" Text="{Binding QcTriviaWeight}" PlaceholderText="2.9 kg" AutomationProperties.Name="weight" />
+              </Grid></StackPanel>
             <StackPanel><TextBlock Text="{Binding Text.QcModelName}" Classes="field-label" />
               <TextBox Text="{Binding QcModelName}" PlaceholderText="weapons/mw3/pmike" AutomationProperties.Name="{Binding Text.QcModelName}" /></StackPanel>
             <StackPanel><TextBlock Text="{Binding Text.QcMaterialsPath}" Classes="field-label" />

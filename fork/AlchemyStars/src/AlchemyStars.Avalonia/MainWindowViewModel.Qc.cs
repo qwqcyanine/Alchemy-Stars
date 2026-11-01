@@ -14,6 +14,13 @@ public sealed partial class MainWindowViewModel
     public string QcHandsFile { get => qcHandsFile; set { qcHandsFile = value ?? ""; OnPropertyChanged(); } }
     public string QcWeaponFile { get => qcWeaponFile; set { qcWeaponFile = value ?? ""; OnPropertyChanged(); _ = FillQcPrintNameAsync(); } }
     public string QcPrintName { get => qcPrintName; set { qcPrintName = value ?? ""; OnPropertyChanged(); } }
+    private string qcCategory = "";
+    public string QcCategory { get => qcCategory; set { qcCategory = value ?? ""; OnPropertyChanged(); } }
+    // ARC9 SWEP.Trivia; blank manufacturer/caliber are filled from the CoD dump, blank country/weight are left out.
+    public string QcTriviaManufacturer { get; set; } = "";
+    public string QcTriviaCaliber { get; set; } = "";
+    public string QcTriviaCountry { get; set; } = "";
+    public string QcTriviaWeight { get; set; } = "";
     public ObservableCollection<string> QcAttachments { get; } = [];
     public string? QcSelectedAttachment { get => qcSelectedAttachment; set { qcSelectedAttachment = value; OnPropertyChanged(); } }
     public string QcAnimationsFolder { get => qcAnimationsFolder; set { qcAnimationsFolder = value ?? ""; OnPropertyChanged(); } }
@@ -31,10 +38,10 @@ public sealed partial class MainWindowViewModel
     public string QcMaterialsPath { get => qcMaterialsPath; set { qcMaterialsPath = value ?? ""; OnPropertyChanged(); } }
     public string QcLog { get => qcLog; private set { qcLog = value; OnPropertyChanged(); } }
     private int qcTargetIndex;
-    public string[] QcTargetOptions => [Text.QcTargetBoth, "MW Base (Modern Wokefare)", "ARC9"];
-    public int QcTargetIndex { get => qcTargetIndex; set { qcTargetIndex = Math.Clamp(value, 0, 2); OnPropertyChanged(); OnPropertyChanged(nameof(QcTargetHelp)); OnPropertyChanged(nameof(QcIsMwBase)); } }
+    public string[] QcTargetOptions => ["MW Base (Modern Wokefare)", "ARC9"];
+    public int QcTargetIndex { get => qcTargetIndex; set { qcTargetIndex = Math.Clamp(value, 0, 1); OnPropertyChanged(); OnPropertyChanged(nameof(QcTargetHelp)); OnPropertyChanged(nameof(QcIsMwBase)); } }
     private int qcMwLayoutIndex;
-    public bool QcIsMwBase => qcTargetIndex == 1;
+    public bool QcIsMwBase => qcTargetIndex == 0;
     public string[] QcMwLayoutOptions => [Text.QcMwLayoutOfficial, Text.QcMwLayoutSingle];
     public int QcMwLayoutIndex { get => qcMwLayoutIndex; set { qcMwLayoutIndex = Math.Clamp(value, 0, 1); OnPropertyChanged(); } }
     // 0 = detect from the CoD class segment of the receiver name (sm_ -> Submachine Guns).
@@ -57,9 +64,8 @@ public sealed partial class MainWindowViewModel
     public double QcSuperSprintScale { get => qcSuperSprintScale; set { qcSuperSprintScale = Math.Clamp(value, 0, 1.5); OnPropertyChanged(); } }
     public string QcTargetHelp => qcTargetIndex switch
     {
-        1 => Text.QcTargetMwHelp,
-        2 => Text.QcTargetArc9Help,
-        _ => Text.QcTargetBothHelp,
+        1 => Text.QcTargetArc9Help,
+        _ => Text.QcTargetMwHelp,
     };
 
     public async Task PickQcAsync(string field)
@@ -192,7 +198,8 @@ public sealed partial class MainWindowViewModel
         HandsFile = QcHandsFile, WeaponFile = QcWeaponFile, Attachments = [.. QcAttachments],
         AnimationsFolder = QcAnimationsFolder, LocomotionFolder = QcLocomotionFolder, SoundsFolder = QcSoundsFolder, StatsFolder = QcStatsFolder, AmmoFile = QcAmmoFile, OutputFolder = QcOutputFolder,
         AttachmentSource = QcAttachmentSource, ReticleFolder = QcReticleFolder, IconFolder = QcIconFolder, BlueprintFolder = QcBlueprintFolder, AttachmentPackOutput = QcAttachmentPackOutput,
-        ModelPath = QcModelName, MaterialsPath = QcMaterialsPath, PrintName = QcPrintName, Target = QcTargetIndex, MwLayout = QcMwLayoutIndex, SubCategory = QcSubCategoryValue,
+        ModelPath = QcModelName, MaterialsPath = QcMaterialsPath, PrintName = QcPrintName, Target = QcTargetIndex + 1, MwLayout = QcMwLayoutIndex, SubCategory = QcSubCategoryValue, Category = QcCategory,
+        TriviaManufacturer = QcTriviaManufacturer, TriviaCaliber = QcTriviaCaliber, TriviaCountry = QcTriviaCountry, TriviaWeight = QcTriviaWeight,
         WalkScale = (float)QcWalkScale, JogScale = (float)QcJogScale, SprintScale = (float)QcSprintScale, SuperSprintScale = (float)QcSuperSprintScale,
         ConvertMaterials = QcConvertMaterials, MaterialMaxSize = QcMaterialSizes[QcMaterialSizeIndex], IncludeHands = QcIncludeHands,
     };
@@ -208,8 +215,11 @@ public sealed partial class MainWindowViewModel
         foreach (var file in qc.Attachments ?? []) QcAttachments.Add(file);
         QcAnimationsFolder = qc.AnimationsFolder; QcLocomotionFolder = qc.LocomotionFolder; QcSoundsFolder = qc.SoundsFolder ?? ""; QcStatsFolder = qc.StatsFolder ?? ""; QcOutputFolder = qc.OutputFolder;
         QcAttachmentSource = qc.AttachmentSource; QcReticleFolder = qc.ReticleFolder; QcIconFolder = qc.IconFolder ?? ""; QcBlueprintFolder = qc.BlueprintFolder ?? ""; QcAttachmentPackOutput = qc.AttachmentPackOutput;
-        QcModelName = qc.ModelPath; QcMaterialsPath = qc.MaterialsPath; QcTargetIndex = qc.Target; QcMwLayoutIndex = qc.MwLayout;
+        QcModelName = qc.ModelPath; QcMaterialsPath = qc.MaterialsPath; QcTargetIndex = qc.Target - 1; QcMwLayoutIndex = qc.MwLayout;
         QcSubCategoryIndex = Array.IndexOf(MwBaseLua.SubCategories, qc.SubCategory ?? "") + 1;
+        QcCategory = qc.Category ?? "";
+        QcTriviaManufacturer = qc.TriviaManufacturer ?? ""; QcTriviaCaliber = qc.TriviaCaliber ?? ""; QcTriviaCountry = qc.TriviaCountry ?? ""; QcTriviaWeight = qc.TriviaWeight ?? "";
+        OnPropertyChanged(nameof(QcTriviaManufacturer)); OnPropertyChanged(nameof(QcTriviaCaliber)); OnPropertyChanged(nameof(QcTriviaCountry)); OnPropertyChanged(nameof(QcTriviaWeight));
         QcWalkScale = qc.WalkScale; QcJogScale = qc.JogScale; QcSprintScale = qc.SprintScale; QcSuperSprintScale = qc.SuperSprintScale;
         QcConvertMaterials = qc.ConvertMaterials; QcIncludeHands = qc.IncludeHands; QcMaterialSizeIndex = Math.Max(0, Array.IndexOf(QcMaterialSizes, qc.MaterialMaxSize));
         QcLog = "";
@@ -246,12 +256,13 @@ public sealed partial class MainWindowViewModel
                 }
                 BusyMessage = Text.QcGenerating;
             }
-            var request = new QcProjectRequest(parts, QcAnimationsFolder, QcLocomotionFolder, QcOutputFolder, QcModelName.Trim(), QcMaterialsPath.Trim(), (QcTarget)QcTargetIndex,
+            var request = new QcProjectRequest(parts, QcAnimationsFolder, QcLocomotionFolder, QcOutputFolder, QcModelName.Trim(), QcMaterialsPath.Trim(), (QcTarget)(QcTargetIndex + 1),
                 new QcLocomotionScale((float)QcWalkScale, (float)QcJogScale, (float)QcSprintScale, (float)QcSuperSprintScale),
                 QcConvertMaterials, QcMaterialSizes[QcMaterialSizeIndex], QcIncludeHands, QcPrintName.Trim(), QcSoundsFolder.Trim(), (QcMwLayout)QcMwLayoutIndex,
                 // The attachment pack's CoD source: each grip there gets its own left-hand pose on this weapon.
                 GripDirectory: QcAttachmentSource.Trim(), StatsFile: QcStatsFolder.Trim(), IconDirectory: QcIconFolder.Trim(),
-                BlueprintDirectory: QcBlueprintFolder.Trim(), BlueprintFilled: blueprintFilled, SubCategory: QcSubCategoryValue);
+                BlueprintDirectory: QcBlueprintFolder.Trim(), BlueprintFilled: blueprintFilled, SubCategory: QcSubCategoryValue, Category: QcCategory.Trim(),
+                Trivia: new(QcTriviaManufacturer, QcTriviaCaliber, QcTriviaCountry, QcTriviaWeight));
             QcProjectResult result;
             try { result = await Task.Run(() => QcProjectGenerator.Generate(request)); }
             finally { try { if (Directory.Exists(ammoStaging)) Directory.Delete(ammoStaging, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
@@ -307,11 +318,12 @@ public sealed partial class UiText
     public string QcDropIgnored => L("部分拖入的文件不是可识别的 .cast，已忽略", "Some dropped files are not recognizable CAST files and were ignored");
     public string QcScaleHeader => L("共享 locomotion 幅度（仅影响从共享目录借用的 walk / jog / sprint）", "Shared locomotion amplitude (only clips borrowed from the shared folder)");
     public string QcTarget => L("目标武器 Base", "Target weapon base");
-    public string QcTargetBoth => L("MW Base + ARC9（通用）", "MW Base + ARC9 (universal)");
-    public string QcTargetBothHelp => L("同时写入 MW Base 的姿态参数叠加层与 ARC9 序列名（ready / enter_sights / idle_sprint 等），一个模型两个 Base 都能用。", "Writes MW Base pose-parameter layers and ARC9 sequence names (ready / enter_sights / idle_sprint…), so one model works on both bases.");
-    public string QcTargetMwHelp => L("仅 MW Base：jog/walk/sprint/aim_offset 等 poseparameter 叠加层与 5004/9011/9021/9031 事件，不写 ARC9 别名序列。", "MW Base only: jog/walk/sprint/aim_offset pose-parameter layers and 5004/9011/9021/9031 events, no ARC9 alias sequences.");
+    public string QcTargetMwHelp => L("MW Base：jog/walk/sprint/aim_offset 等 poseparameter 叠加层与 5004/9011/9021/9031 事件。", "MW Base: jog/walk/sprint/aim_offset pose-parameter layers and 5004/9011/9021/9031 events.");
     public string QcTargetArc9Help => L("仅 ARC9：QCA 1 枪口 / 2 抛壳 / 4 镜头，ARC9 命名序列；不写 MW Base 叠加层（ARC9 自己做程序化晃动）。", "ARC9 only: QCA 1 muzzle / 2 shell / 4 camera and ARC9-named sequences; no MW Base layers (ARC9 sways procedurally).");
-    public string QcSubCategory => L("Q 菜单分类（MW Base SubCategory）", "Spawn menu category (MW Base SubCategory)");
+    public string QcSubCategory => L("Q 菜单子分类（SWEP.SubCategory）", "Spawn menu subcategory (SWEP.SubCategory)");
+    public string QcTrivia => L("ARC9 资料（SWEP.Trivia：厂商 / 口径 / 产地 / 重量；厂商和口径留空 = 从 COD 数据自动识别，其余留空 = 不显示）",
+        "ARC9 trivia (SWEP.Trivia: manufacturer / caliber / country / weight; blank manufacturer or caliber = detect from the COD dump, other blanks are omitted)");
+    public string QcCategory => L("ARC9 Q 菜单标签（SWEP.Category，留空 = ARC9 - Generated）", "ARC9 spawn menu tab (SWEP.Category, blank = ARC9 - Generated)");
     public string QcSubCategoryAuto => L("自动（按 CoD 武器类型，如 sm_ → Submachine Guns）", "Auto (from the CoD class, e.g. sm_ -> Submachine Guns)");
     public string QcMwLayout => L("MW Base 工程布局", "MW Base project layout");
     public string QcMwLayoutOfficial => L("官方（Source-Files-MW-Public：weapon_viewmodel.qc + 分文件，配件为独立 bonemerge 模型）", "Official (Source-Files-MW-Public: weapon_viewmodel.qc + includes, attachments as bonemerged models)");

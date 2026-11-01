@@ -23,7 +23,7 @@ public static partial class CodFireSound
 
     /// <param name="codToken">CoD weapon token (sm_pmike), from <see cref="Token"/>.</param>
     /// <param name="script">Sound script the sound.Add calls are appended to (shared with <see cref="CodSoundResolver"/>).</param>
-    public static CodFireSet Build(string soundDirectory, string output, string weaponName, string codToken, string script)
+    public static CodFireSet Build(string soundDirectory, string output, string weaponName, string codToken, string script, bool tail = true)
     {
         var log = new List<string>();
         // The alias tables (sndbanks/csv) list exact files; scanning the whole sounds tree would be slow and ambiguous.
@@ -34,8 +34,9 @@ public static partial class CodFireSound
         var mechAds = Layer(files, "fire_plr_mech_ads");
         var transient = Layer(files, "fire_plr_transient");
         var suppressed = Layer(files, "sup_plr_shot");
-        var tail = Layer(files, "fire_plr_atmo_ext");
-        log.Add($"fire layers: shot {shots.Length}, mech {mech.Length}, mech_ads {mechAds.Length}, transient {transient.Length}, sup_shot {suppressed.Length}, atmo_ext {tail.Length}");
+        // The tail is an ARC9 LayerSound; MW Base has no slot for it.
+        var tails = tail ? Layer(files, "fire_plr_atmo_ext") : [];
+        log.Add($"fire layers: shot {shots.Length}, mech {mech.Length}, mech_ads {mechAds.Length}, transient {transient.Length}, sup_shot {suppressed.Length}, atmo_ext {tails.Length}");
 
         var target = Path.Combine(output, "sound", "weapons", weaponName);
         Directory.CreateDirectory(target);
@@ -64,7 +65,7 @@ public static partial class CodFireSound
             // The transient is the unsuppressed muzzle crack, so the suppressed shots skip it.
             Write("fire_sup", suppressed, mech, []),
             Write("fire_sup_ads", suppressed, mechAds.Length > 0 ? mechAds : mech, []),
-            WriteTail(target, weaponName, tail, fireRms * Math.Pow(10, TailRelDb / 20)),
+            WriteTail(target, weaponName, tails, fireRms * Math.Pow(10, TailRelDb / 20)),
             log);
         if (set.Suppressed is null) log.Add("no wpn_*_sup_plr_shot_NN.wav: suppressed barrels keep the normal fire sound");
         WriteScript(script, weaponName, set, target);
@@ -105,7 +106,8 @@ public static partial class CodFireSound
             // MW Base official fire aliases: CHAN_WEAPON + 1, level 140, slight pitch spread (mw_sounds_ar_akilo47.lua).
             lua.AppendLine().AppendLine("sound.Add({");
             lua.AppendLine($"    name = \"{alias}\",");
-            lua.AppendLine("    channel = CHAN_WEAPON + 1,");
+            // The tail plays right after the shot; sharing its channel cut the shot off. 136 = ARC9.CHAN_DISTANT (it rides on DistantShootSound).
+            lua.AppendLine(alias == set.Tail ? "    channel = 136," : "    channel = CHAN_WEAPON + 1,");
             lua.AppendLine("    volume = 1,");
             lua.AppendLine("    level = 140,");
             lua.AppendLine("    pitch = {95, 105},");

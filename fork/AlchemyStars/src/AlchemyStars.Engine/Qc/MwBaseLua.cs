@@ -674,5 +674,5 @@ public static class MwBaseLua
         new string(text.ToLowerInvariant().Select(c => char.IsAsciiLetterOrDigit(c) ? c : '_').ToArray()).Trim('_');
 
     /// <summary>Escapes text for a double-quoted Lua string (display names like 9mm "PM").</summary>
-    public static string LuaString(string text) => text.Replace("\\", "\\\\").Replace("\"", "\\\"");
+    public static string LuaString(string text) => text.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", "").Replace("\n", "\\n");
 }

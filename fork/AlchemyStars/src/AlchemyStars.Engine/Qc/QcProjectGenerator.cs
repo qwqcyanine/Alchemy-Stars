@@ -20,6 +20,7 @@ namespace AlchemyStars.Engine;
 /// <param name="BlueprintDirectory">Optional saluki blueprint export (folders "&lt;model&gt;_&lt;base model&gt;"): MW Base official
 /// layout writes them as a separate &lt;output&gt;_blueprints addon of cosmetic parts and injectors.</param>
 /// <param name="SubCategory">MW Base spawn menu group (SWEP.SubCategory); empty = detected from the CoD class (sm_ -> Submachine Guns).</param>
+/// <param name="Category">ARC9 spawn menu tab (SWEP.Category, attachment MenuCategory); empty = "ARC9 - Generated".</param>
 /// <param name="BlueprintFilled">Blueprint CAST → copy with its magazine rounds filled (QcAmmoFiller), used for the mesh.</param>
 /// <param name="ModelPath">Model path without prefix/extension, e.g. "weapons/mw3/pmike" → weapons/mw3/v_pmike.mdl + w_pmike.mdl. Blank = automatic.</param>
 public sealed record QcProjectRequest(
@@ -29,7 +30,7 @@ public sealed record QcProjectRequest(
     string OutputDirectory,
     string ModelPath = "",
     string MaterialsPath = "",
-    QcTarget Target = QcTarget.Both,
+    QcTarget Target = QcTarget.MwBase,
     QcLocomotionScale? Scale = null,
     bool ConvertMaterials = false,
     int MaterialMaxSize = 2048,
@@ -42,7 +43,12 @@ public sealed record QcProjectRequest(
     string IconDirectory = "",
     string BlueprintDirectory = "",
     IReadOnlyDictionary<string, string>? BlueprintFilled = null,
-    string SubCategory = "");
+    string SubCategory = "",
+    string Category = "",
+    QcTrivia? Trivia = null);
+
+/// <summary>ARC9 SWEP.Trivia values typed by the user; blank Manufacturer/Caliber come from the CoD dump, other blanks are left out.</summary>
+public sealed record QcTrivia(string Manufacturer = "", string Caliber = "", string Country = "", string Weight = "");
 
 /// <summary>
 /// MW Base project layout. Official = Source-Files-MW-Public (weapon_viewmodel.qc + includes, attachments as separate
@@ -63,8 +69,8 @@ public sealed record QcLocomotionScale(float Walk = 1, float Jog = 1, float Spri
     };
 }
 
-/// <summary>Which weapon base the QC targets. Both = MW Base layers/events plus ARC9 alias sequences.</summary>
-public enum QcTarget { Both, MwBase, Arc9 }
+/// <summary>Which weapon base the QC targets. Values match the saved project index (0 was the removed "Both").</summary>
+public enum QcTarget { MwBase = 1, Arc9 = 2 }
 
 public sealed record QcProjectResult(
     string ViewModelQc,
@@ -102,6 +108,7 @@ public static partial class QcProjectGenerator
         ("sprint_loop", "sprint_loop", true),
         ("sprint_offset", "sprint_offset_additive", false),
         ("super_sprint_loop", "super_sprint_loop", true),
+        ("super_sprint_offset", "super_sprint_offset_additive", false),
         ("grip_ang_offset", "pose_l_gripang", false),
         ("grip_vert_offset", "pose_l_gripvert", false),
         ("empty_offset", "idle_empty", false),
@@ -151,6 +158,19 @@ public static partial class QcProjectGenerator
 
     private static readonly string[] SkippedClips = ["branched", "transition", "additive", "pose", "settle", "non_loop", "override", "retracted", "hybrid", "nvg"];
     private static readonly string[] SequenceClips = ["idle", "raise", "drop", "fire", "reload", "inspect", "melee", "selectsemi", "ads_up", "ads_down"];
+
+    private static IReadOnlyList<(string Key, string Value)> Trivia(QcTrivia? typed, Cod20Stats? stats, Cod20Stats.Weapon? weapon)
+    {
+        typed ??= new();
+        static string? Pick(string text, string? auto) => text.Trim() is { Length: > 0 } t ? t : auto;
+        return new (string Key, string? Value)[]
+        {
+            ("Manufacturer", Pick(typed.Manufacturer, weapon is null ? null : stats!.Manufacturer(weapon))),
+            ("Country of Origin", Pick(typed.Country, null)),
+            ("Caliber", Pick(typed.Caliber, weapon is null ? null : stats!.Caliber(weapon))),
+            ("Weight", Pick(typed.Weight, null)),
+        }.Where(row => row.Value is not null).Select(row => (row.Key, row.Value!)).ToArray();
+    }
 
     public static QcProjectResult Generate(QcProjectRequest request)
     {
@@ -260,15 +280,16 @@ public static partial class QcProjectGenerator
             var missing = new List<string>();
             foreach (var (layer, source, loop) in LayerSources)
             {
+                // ARC9-only layer: MW Base's super sprint transitions carry the pose, and its output must stay unchanged.
+                if (useMw && layer == "super_sprint_offset") continue;
                 // Weapon clips first; shared locomotion (another gun's rig) only fills gaps.
                 var own = Find(clips, source);
                 // MW Base holds ADS only through aim_offset (Ads_In then returns to Idle). Without ads_additive use the
                 // ads_up end pose; a shared ads_additive is the other rig's left arm and has no tag_ads move at all.
                 var adsHold = layer == "aim_offset" && own is null && useMw && clips.ContainsKey("ads_up")
                     ? Path.Combine(output, "anims", "ads_up.smd") : null;
-                // Super sprint from another rig swings this gun with that rig's pose; without its own clips MW Base just sprints.
-                // MW Base target borrows it like x123 borrows mike4: the whole clip as a delta, hands kept on by ikrule.
-                var file = own ?? adsHold ?? (layer.StartsWith("super_sprint", StringComparison.Ordinal) && !mwOnly ? null : Find(locomotion, source));
+                // Super sprint is borrowed like x123 borrows mike4 (both targets): the whole clip as a delta, hands kept on by ikrule.
+                var file = own ?? adsHold ?? Find(locomotion, source);
                 if (file is null) { missing.Add(layer); continue; }
                 var smd = Path.Combine(output, "anims", layer + ".smd");
                 var text = new StringBuilder(Heading("Subtracted animations"));
@@ -283,14 +304,21 @@ public static partial class QcProjectGenerator
                     foreach (var (pose, index) in poses.Select((pose, index) => (pose, index)))
                         text.AppendLine($"$animation a_{layer}_{index:00} \"anims/{pose}\" subtract a_idle_ref 0");
                 }
-                else if (own is null && mwOnly && loop)
+                else if (own is null && (mwOnly || layer.StartsWith("super_sprint", StringComparison.Ordinal)) && loop)
                 {
                     // The other rig's loop as is, minus its own first frame: only its motion lands on this gun.
                     // Locomotion scale caps the blend instead (parameter 1 reaches scale of the way to a_<layer>).
                     var weight = Math.Clamp((request.Scale ?? new()).For(layer), 0, 1);
                     if (weight <= 0) { missing.Add(layer); continue; }
                     upper = 1 / weight;
-                    var frames = Bake(plan, file, smd);
+                    // Super sprint's left hand is off the gun (CoD's transitions release its IK): left IK on the loop pins
+                    // the wrist to a rest tag_ik_loc_le it cannot reach, and the elbow flips between solutions per frame.
+                    // Its clavicles also slide up to ~20 units per stride; studiomdl turns that into shoulder/elbow flips, so drop it.
+                    var superSprint = !useMw && layer.StartsWith("super_sprint", StringComparison.Ordinal);
+                    // ARC9 plays the loop at full weight (no cap like MW Base's), so the locomotion scale tames the weapon's
+                    // bob instead: CoD's ±8 tz stride read as a fast swing next to COD2019's MP5 (~2 units).
+                    var bob = useMw ? 1 : Math.Clamp((request.Scale ?? new()).For(layer), 0, 1);
+                    var frames = Bake(plan, superSprint ? WithoutClavicleSlide(file, staging, bob) : file, smd, leftIk: !superSprint);
                     text.AppendLine($"$animation a_{layer}_ref \"anims/{layer}.smd\"");
                     text.AppendLine($"$animation a_{layer}_zero \"anims/{HeldIdle(output, layer, frames)}\" fps {Number(Fps)} subtract a_idle_ref 0");
                     text.AppendLine($"$animation a_{layer} \"anims/{layer}.smd\" fps {Number(Fps)} subtract a_{layer}_ref 0");
@@ -299,8 +327,11 @@ public static partial class QcProjectGenerator
                 {
                     // A shared clip's arms grip a different gun. Keep only its weapon/camera motion as a delta,
                     // layer it on this weapon's idle and let the baked IK keep the hands on tag_ik_loc_*.
-                    var delta = WeaponOnlyDelta(file, loop, staging, Math.Clamp((request.Scale ?? new()).For(layer), 0, 1.5f));
-                    var frames = Bake(plan, idle, smd, [new AnimationLayerSpec(delta, AnimationLayerKind.Additive)]);
+                    // The scale only tames loops: a halved offset left ARC9's sprint pose at half CoD's roll and the in/out
+                    // transitions (full pose) snapped to it. Super sprint is one-handed, so its pose keeps the arms too.
+                    var delta = layer == "super_sprint_offset" ? file
+                        : WeaponOnlyDelta(file, loop, staging, loop || useMw ? Math.Clamp((request.Scale ?? new()).For(layer), 0, 1.5f) : 1);
+                    var frames = Bake(plan, idle, smd, [new AnimationLayerSpec(delta, AnimationLayerKind.Additive)], leftIk: layer != "super_sprint_offset");
                     if (loop)
                     {
                         text.AppendLine($"$animation a_{layer}_ref \"anims/{layer}.smd\"");
@@ -367,15 +398,17 @@ public static partial class QcProjectGenerator
             foreach (var (sequence, source) in Transitions)
             {
                 var own = Find(clips, source);
-                var file = own ?? (sequence.StartsWith("super_sprint", StringComparison.Ordinal) && !mwOnly ? null : Find(locomotion, source));
+                var file = own ?? Find(locomotion, source);
                 if (file is null) continue;
+                var super = sequence.StartsWith("super_sprint", StringComparison.Ordinal);
                 var smd = Path.Combine(output, "anims", sequence + ".smd");
                 // Official layout: one additives/<transition>.qc each (akilo47 sprint_in.qc); otherwise inline in animations_basic.
                 var transition = separate ? new StringBuilder() : basic;
                 var body = new StringBuilder();
-                var super = sequence.StartsWith("super_sprint", StringComparison.Ordinal);
                 var leftHand = new List<string>();
-                if (mwOnly)
+                // ARC9 too: super sprint frees the left hand, which only the arm delta plus ranged lhand ikrule below can do.
+                var held = mwOnly || super;
+                if (held)
                 {
                     // akilo47 sprint_in/sprint_out: a held idle timed to the clip plus the clip as a delta layer. In-transitions
                     // subtract frame 0 (rest -> pose), out-transitions their last frame (pose -> rest, ends on idle).
@@ -387,9 +420,9 @@ public static partial class QcProjectGenerator
                     // gun's idle does not keep it on the grip outside them (a borrowed rig's wrist sinks ~4 in through the gun),
                     // so a ranged lhand ikrule does. Ranges count frames of the main animation: hold idle for the clip's length.
                     if (super) leftHand.AddRange(LeftHandIkRanges(file, frames).Select(range => $"\tikrule lhand touch \"{LeftIk.TargetBone}\" usesource range {range}"));
-                    var held = leftHand.Count > 0 ? HeldIdle(output, sequence, frames) : (hold ??= HeldIdle(output, "hold", 2));
+                    var heldSmd = leftHand.Count > 0 ? HeldIdle(output, sequence, frames) : (hold ??= HeldIdle(output, "hold", 2));
                     var heldFps = leftHand.Count > 0 ? Fps : Fps / Math.Max(1, frames - 1);
-                    body.AppendLine($"\t\"anims/{held}\"\n\tfps {Number(heldFps)}\n\taddlayer \"a_{sequence}\"");
+                    body.AppendLine($"\t\"anims/{heldSmd}\"\n\tfps {Number(heldFps)}\n\taddlayer \"a_{sequence}\"");
                     lengths[sequence] = frames;
                 }
                 else
@@ -401,7 +434,7 @@ public static partial class QcProjectGenerator
                 }
                 body.AppendLine(super ? "\t$include \"macros/layers_super.qc\"" : "\t$include \"macros/layers.qc\"");
                 // Super sprint is one-handed (akilo47 super_sprint_in comments out the lhand rule): the left hand only in its range.
-                body.AppendLine(super && mwOnly ? string.Join('\n', leftHand.Prepend($"\tikrule rhand touch \"{RightIk.TargetBone}\" usesource")) : "\t$include \"macros/ik.qc\"").AppendLine(mwOnly ? "" : $"\tfps {Number(Fps)}").AppendLine("\tfadein 0.2\n\tfadeout 0.2");
+                body.AppendLine(super ? string.Join('\n', leftHand.Prepend($"\tikrule rhand touch \"{RightIk.TargetBone}\" usesource")) : "\t$include \"macros/ik.qc\"").AppendLine(held ? "" : $"\tfps {Number(Fps)}").AppendLine("\tfadein 0.2\n\tfadeout 0.2");
                 transition.Append(Heading("Sequence")).AppendLine($"$sequence \"{sequence}\" {{").Append(body).AppendLine("}").AppendLine();
                 if (separate)
                 {
@@ -426,6 +459,16 @@ public static partial class QcProjectGenerator
                     + (layers.Contains("sprint_offset") ? "\taddlayer \"a9_sprint_offset_full\"\n" : "")
                     + $"\taddlayer \"a9_sprint_loop_full\"\n\t$include \"macros/ik.qc\"\n\tfps {Number(Fps)}\n\tloop\n}}");
             }
+            // ARC9-COD2019 super_sprint_idle (perk_super_sprint): one-handed, so only the right hand is pinned.
+            // shortcut: plays the borrowed loop at full weight (MW Base caps it with QcLocomotionScale.SuperSprint); scale the
+            // delta in the bake if a borrowed super sprint looks too wild in ARC9.
+            if (layers.Contains("super_sprint_loop"))
+                arc9.AppendLine().AppendLine("$sequence \"a9_super_sprint_loop_full\" {\n\ta_super_sprint_loop\n\tdelta\n\tloop\n}\n")
+                    .AppendLine(layers.Contains("super_sprint_offset") ? "$sequence \"a9_super_sprint_offset_full\" {\n\ta_super_sprint_offset\n\tdelta\n}\n" : "")
+                    .AppendLine($"$sequence \"super_sprint_idle\" {{\n\t\"anims/super_sprint_loop_idle.smd\"\n"
+                        + (layers.Contains("super_sprint_offset") ? "\taddlayer \"a9_super_sprint_offset_full\"\n" : "")
+                        + "\taddlayer \"a9_super_sprint_loop_full\"\n"
+                        + $"\tikrule rhand touch \"{RightIk.TargetBone}\" usesource\n\tfps {Number(Fps)}\n\tloop\n}}");
             if (useArc9) File.WriteAllText(Path.Combine(output, "animations_arc9.qc"), arc9.ToString());
 
             File.WriteAllText(Path.Combine(output, "animations_basic.qc"), Heading("Sequences") + basic);
@@ -487,7 +530,7 @@ public static partial class QcProjectGenerator
             // VMT/VTF land in <output>/materials/<cdmaterials>, ready to copy into the addon next to models/ and lua/.
             var materialLog = request.ConvertMaterials
                 ? CodMaterialConverter.Convert(request.Parts.Select(part => part.FilePath), Path.Combine(output, "materials", materials.Replace('/', Path.DirectorySeparatorChar)),
-                    materials, request.Target == QcTarget.MwBase ? VmtEnvmapStyle.MwBase : request.Target == QcTarget.Arc9 ? VmtEnvmapStyle.Arc9 : VmtEnvmapStyle.Cubemap,
+                    materials, request.Target == QcTarget.Arc9 ? VmtEnvmapStyle.Arc9 : VmtEnvmapStyle.MwBase,
                     request.MaterialMaxSize)
                 : null;
             // One sound script per weapon, in the folder its base auto-loads: MW Base mw_loader IncludeDir("weapons/mg_base/modules/sounds")
@@ -502,13 +545,13 @@ public static partial class QcProjectGenerator
             }
             // Fire: CoD layers shot + mech + lfe per shot; pre-mixed into one wav per variant for Source.
             var fire = soundScript is null || CodFireSound.Token(weapon.FilePath) is not { } codToken ? null
-                : CodFireSound.Build(request.SoundDirectory!.Trim(), output, weaponName, codToken, soundScript);
+                : CodFireSound.Build(request.SoundDirectory!.Trim(), output, weaponName, codToken, soundScript, tail: useArc9);
             if (fire is not null) notes.AddRange(fire.Log.Select(line => "fire sound: " + line));
             // Foley: aliases the 5004 events fire -> exported files copied to sound/ and registered by sound.Add.
             var sounds = soundScript is null ? null
                 : CodSoundResolver.Resolve(CodSoundResolver.Aliases(sequenceSources.Values), request.SoundDirectory!.Trim(), output, weaponName, soundScript);
-            var melee = soundScript is null || !mwOnly || CodFireSound.Token(weapon.FilePath) is not { } meleeToken ? null
-                : CodSoundResolver.Melee(request.SoundDirectory!.Trim(), output, meleeToken);
+            var melee = soundScript is null || CodFireSound.Token(weapon.FilePath) is not { } meleeToken ? null
+                : CodSoundResolver.Melee(request.SoundDirectory!.Trim(), output, meleeToken, arc9: !mwOnly);
             if (mwOnly)
             {
                 AddMeleeSounds(Path.Combine(output, "animations_basic.qc"), melee);
@@ -563,11 +606,13 @@ public static partial class QcProjectGenerator
             if (stats is not null) notes.Add(codStats is null ? "COD20 stats: no weapon for this receiver" : $"COD20 stats: {codStats.Name}");
             var partMods = codStats is null || stats is null ? null : groups.SelectMany(group => group).ToDictionary(item => item.Token,
                 item => stats.PartMods(codStats, item.Token, QcAttachments.Capacity(item.Token)));
-            var partNames = codStats is null || stats is null ? null : groups.SelectMany(group => group)
-                .Select(item => (item.Token, Name: stats.Name(stats.PartAttachment(codStats, item.Token, QcAttachments.Capacity(item.Token)))
+            // suffix "" = display name, "_desc" = CoD description (same localize key + _DESC).
+            Dictionary<string, string>? PartStrings(string suffix) => codStats is null || stats is null ? null : groups.SelectMany(group => group)
+                .Select(item => (item.Token, Name: stats.Name(stats.PartAttachment(codStats, item.Token, QcAttachments.Capacity(item.Token)) + suffix)
                     // Some parts are named per weapon family (JUP_JP03_PGRIP_TAC, JUP_JP03_BARSIL): jup_jp03_ + token.
-                    ?? stats.Name(string.Join('_', codStats.Name.Split('_').Take(2)) + "_" + item.Token)))
+                    ?? stats.Name(string.Join('_', codStats.Name.Split('_').Take(2)) + "_" + item.Token + suffix)))
                 .Where(item => item.Name is not null).ToDictionary(item => item.Token, item => item.Name!);
+            var partNames = PartStrings("");
             var partIcons = groups.SelectMany(group => group)
                 .Select(item => (item.Token, Icon: AttachmentIcon(request.IconDirectory, item.Part.FilePath, Path.Combine(output, "materials"), $"{materials.TrimEnd('/')}/icons/{item.Token}")))
                 .Where(item => item.Icon is not null).ToDictionary(item => item.Token, item => item.Icon!);
@@ -577,9 +622,10 @@ public static partial class QcProjectGenerator
             var codName = ReceiverName().Match(weaponStem) is { Success: true } receiverName ? receiverName.Groups[1].Value : weaponName;
             if (!mwOnly)
             {
-                // ARC9 / Both: one combined model, bodygroup attachments driven by AttachmentElements.
+                // ARC9: one combined model, bodygroup attachments driven by AttachmentElements.
                 var arc9Sequences = sequences.ToDictionary(name => name, name => (lengths.GetValueOrDefault(name, 1), checkpoints.GetValueOrDefault(name), sequenceSources[name]));
                 if (useArc9 && layers.Contains("sprint_loop")) arc9Sequences["idle_sprint"] = (lengths["idle"], null, "");
+                if (useArc9 && layers.Contains("super_sprint_loop")) arc9Sequences["super_sprint_idle"] = (lengths["idle"], null, "");
                 var adsUp = Path.Combine(output, "anims", "ads_up.smd");
                 var sight = File.Exists(adsUp) ? SolveSight(Path.Combine(output, "anims", "idle.smd"), adsUp) : null;
                 // Each barrel carries its own tag_silencer; the combined model has one, so Arc9Lua moves that bone per barrel element.
@@ -595,7 +641,8 @@ public static partial class QcProjectGenerator
             var arc9Lua = Arc9Lua.Write(output, new(weaponName, $"models/{modelDirectory}v_{weaponName}.mdl", $"models/{modelDirectory}w_{weaponName}.mdl",
                     groups.Select(group => group.Select(item => (item.Token, RootBone(item.Part.FilePath))).ToArray()).ToArray(), arc9Sequences, sight, request.PrintName.Trim(), sounds?.Aliases.Keys.ToHashSet(), BulletBones(plan.Skeleton), magSwaps,
                     emptyDefaults, suppressed, fire, codStats, partMods, partNames, partIcons, pack, bones, request.SubCategory.Trim(),
-                    WeaponIcon(request.IconDirectory, weaponName, codName, Path.Combine(output, "materials"), notes, arc9: true), muzzleOffsets, codGripPoses, BarrelTags(plan.Skeleton)));
+                    WeaponIcon(request.IconDirectory, weaponName, codName, Path.Combine(output, "materials"), notes, arc9: true), muzzleOffsets, codGripPoses, BarrelTags(plan.Skeleton),
+                    request.Category.Trim(), codStats is null ? null : stats!.Description(codStats), PartStrings("_desc"), Trivia(request.Trivia, stats, codStats), melee));
                 return new(viewQc, worldQc, sequences, layers, missing, LuaDirectory: arc9Lua, MaterialLog: materialLog, Sounds: sounds, Notes: notes);
             }
             var attachmentDirectory = $"{modelDirectory}attachments/{weaponName}/";
@@ -916,10 +963,39 @@ public static partial class QcProjectGenerator
         return output;
     }
 
+    private static string WithoutClavicleSlide(string file, string staging, float bob = 1)
+    {
+        var cast = CastReader.Load(file);
+        foreach (var animation in cast.RootNodes.SelectMany(DescendantsAndSelf).OfType<AnimationNode>().ToArray())
+            foreach (var curve in animation.Children.OfType<CurveNode>().ToArray())
+            {
+                if (curve.NodeName.StartsWith("j_clavicle_", StringComparison.OrdinalIgnoreCase) && curve.KeyPropertyName is "tx" or "ty" or "tz")
+                    animation.Children.Remove(curve);
+                // Scaled around frame 0: the loop layer subtracts its first frame. tag_weapon's ~30° pitch wobble moves the
+                // gun as much as its translation does.
+                else if (bob != 1 && WeaponMotionBones.Contains(curve.NodeName, StringComparer.OrdinalIgnoreCase))
+                    switch (curve.KeyValueBuffer)
+                    {
+                        case CastArrayProperty<float> { Values.Count: > 0 } values:
+                            var first = values.Values[0];
+                            values.Values = values.Values.Select(value => first + (value - first) * bob).ToList();
+                            break;
+                        case CastArrayProperty<Vector4> { Values.Count: > 0 } values:
+                            var q0 = Quaternion.Normalize(ToQuaternion(values.Values[0]));
+                            var inverse = Quaternion.Inverse(q0);
+                            values.Values = values.Values.Select(value => { var q = q0 * Quaternion.Slerp(Quaternion.Identity, Quaternion.Normalize(inverse * ToQuaternion(value)), bob); return new Vector4(q.X, q.Y, q.Z, q.W); }).ToList();
+                            break;
+                    }
+            }
+        var output = Path.Combine(staging, $"{Path.GetFileNameWithoutExtension(file)}_no_clavicle_slide.cast");
+        CastWriter.Save(output, cast);
+        return output;
+    }
+
     private static Quaternion ToQuaternion(Vector4 value) => new(value.X, value.Y, value.Z, value.W);
 
     private static int Bake(SkeletonMergePlan plan, string file, string output, IReadOnlyList<AnimationLayerSpec>? layers = null, string? basePose = null,
-        string leftHandPose = "")
+        string leftHandPose = "", bool leftIk = true)
     {
         // Camera-only clips (ads_up/down, idle_empty: just tag_ads) leave the arms in bind pose;
         // play them as a Normal layer over idle and keep only the clip's own length.
@@ -930,7 +1006,7 @@ public static partial class QcProjectGenerator
             layers = [new AnimationLayerSpec(file, AnimationLayerKind.Normal)];
             file = basePose;
         }
-        var job = new AnimationExportJob(file, Path.GetFileNameWithoutExtension(output), Path.GetDirectoryName(output)!, Fps, LeftHandPoseFile: leftHandPose, Layers: layers);
+        var job = new AnimationExportJob(file, Path.GetFileNameWithoutExtension(output), Path.GetDirectoryName(output)!, Fps, EnableLeftHandIk: leftIk, LeftHandPoseFile: leftHandPose, Layers: layers);
         var baked = AnimationConverter.Bake(plan, AnimationExportEngine.ToCompatibilityAnimation(job),
             AnimationExportEngine.ToIkSettings(LeftIk, ""), AnimationExportEngine.ToIkSettings(RightIk, ""), false, false);
         if (trim is { } frames)

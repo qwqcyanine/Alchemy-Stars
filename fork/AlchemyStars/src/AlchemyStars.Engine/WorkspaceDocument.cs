@@ -90,6 +90,13 @@ public sealed class WorkspaceQcSettings
     public string BlueprintFolder { get; set; } = string.Empty;
     /// <summary>MW Base SWEP.SubCategory; empty = detect from the CoD class.</summary>
     public string SubCategory { get; set; } = string.Empty;
+    /// <summary>ARC9 SWEP.Category; empty = "ARC9 - Generated".</summary>
+    public string Category { get; set; } = string.Empty;
+    /// <summary>ARC9 SWEP.Trivia overrides; empty = auto (manufacturer, caliber) or omitted.</summary>
+    public string TriviaManufacturer { get; set; } = string.Empty;
+    public string TriviaCaliber { get; set; } = string.Empty;
+    public string TriviaCountry { get; set; } = string.Empty;
+    public string TriviaWeight { get; set; } = string.Empty;
     public string AttachmentPackOutput { get; set; } = string.Empty;
     public string OutputFolder { get; set; } = string.Empty;
     public string ModelPath { get; set; } = string.Empty;

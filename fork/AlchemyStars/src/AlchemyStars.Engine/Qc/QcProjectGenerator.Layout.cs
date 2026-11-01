@@ -90,7 +90,7 @@ public static partial class QcProjectGenerator
             """);
     }
 
-    /// <summary>ARC9 / Both / MW Base single-file entries: one flat include list per model (Flatten may inline it later).</summary>
+    /// <summary>ARC9 / MW Base single-file entries: one flat include list per model (Flatten may inline it later).</summary>
     private static void WriteCombinedEntries(string viewQc, string worldQc, QcTarget target, string modelDirectory, string weaponName,
         string common, string receiver, IEnumerable<string> poseParameters, IReadOnlyList<string> layers, bool useArc9)
     {

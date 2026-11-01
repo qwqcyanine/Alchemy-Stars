@@ -145,7 +145,7 @@ public static partial class QcProjectGenerator
                     if (optic && rtIndex < 0)
                         rtIndex = modelMaterials.FindIndex(name => !name.Contains("reticle_ui_stencil", StringComparison.OrdinalIgnoreCase)
                             && lens.Any(index => meshMaterials[index] == name));
-                    arc9 = Arc9SightLua(sight.Base, sight.Size, reticle, BarrelTags(plan.Skeleton).GetValueOrDefault("tag_reticle_attach").P, rtIndex);
+                    arc9 = Arc9SightLua(sight.Base, sight.Size, reticle, BarrelTags(plan.Skeleton).GetValueOrDefault("tag_reticle_attach").P, rtIndex, thermal, RtReticleScale(merged));
                 }
                 else
                 {
@@ -182,7 +182,7 @@ public static partial class QcProjectGenerator
                 var arc9File = Path.Combine(output, "lua", "arc9", "common", "attachments", className + ".lua");
                 Directory.CreateDirectory(Path.GetDirectoryName(arc9File)!);
                 LuaFile.Write(arc9File, Arc9AttachmentLua(mount, className, AttachmentName(token, stats), icon, arc9,
-                    stats is not null && stats.Knows(token) ? stats.Mods(token) : null));
+                    stats is not null && stats.Knows(token) ? stats.Mods(token) : null, stats?.Name(token + "_desc")));
                 luas.Add(arc9File);
             }
             log.AddRange(CodMaterialConverter.Convert(staged, materials, AttachmentPackMaterials + "/", VmtEnvmapStyle.MwBase,
@@ -244,6 +244,24 @@ public static partial class QcProjectGenerator
         return xs.Length == 0 ? 0 : xs.Max() - xs.Min();
     }
 
+    /// <summary>
+    /// RTScopeReticleScale that makes ARC9's reticle quad cover the CoD reticle_ui_stencil (the glass the reticle is printed on).
+    /// ARC9 draws the quad (side 8*scale*ScopeScreenRatio 0.5) 1.5 units past the model's min-x bound, seen from the sight eye
+    /// 6 units back; the stencil is h tall at its own x. Equal on-screen size gives scale = h * D * 1.5 / (48 * 0.75 * tan 27°).
+    /// </summary>
+    // shortcut: fov constant (0.75*tan 27°) fitted to ARC9's 90° RT camera at 16:9; falls back to 0.3 if a sight has no stencil.
+    private static float RtReticleScale(string merged)
+    {
+        var model = CastReader.Load(merged).RootNodes.SelectMany(DescendantsAndSelf).OfType<ModelNode>().Single();
+        var stencil = model.Meshes.Where(mesh => mesh.Material?.Name?.Contains("reticle_ui_stencil", StringComparison.OrdinalIgnoreCase) == true)
+            .SelectMany(mesh => mesh.VertexPositionBuffer.Values).ToArray();
+        if (stencil.Length == 0) return 0.3f;
+        var minX = model.Meshes.SelectMany(mesh => mesh.VertexPositionBuffer.Values).Min(position => position.X) * Inches;
+        var height = (stencil.Max(p => p.Z) - stencil.Min(p => p.Z)) * Inches;
+        var distance = 6 + 1.5f + minX - stencil.Average(p => p.X) * Inches;
+        return MathF.Round(height * distance * 1.5f / (48 * 0.75f * MathF.Tan(27 * MathF.PI / 180)), 3);
+    }
+
     private static HashSet<string> WeightedBoneNames(MeshNode mesh, string[] bones)
     {
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -299,6 +317,23 @@ public static partial class QcProjectGenerator
         return ("att_sight_1x", "reticle_reflex_default2", 950, null);
     }
 
+    // FLIR block copied from ARC9-COD2019 mw19_defaultscopes.lua (its thermal scope).
+    // shortcut: therm reticle scale 0.3 was tuned in game on twofivextherm01 only.
+    private const string Arc9Flir = """
+        ATT.RTScopeFLIR = true
+        ATT.RTScopeFLIRSolid = false
+        ATT.RTScopeFLIRCCCold = {
+            ["$pp_colour_addr"] = 0, ["$pp_colour_addg"] = 0, ["$pp_colour_addb"] = 0,
+            ["$pp_colour_brightness"] = 0.1, ["$pp_colour_contrast"] = 0.7, ["$pp_colour_colour"] = 0.1,
+            ["$pp_colour_mulr"] = 0, ["$pp_colour_mulg"] = 0, ["$pp_colour_mulb"] = 0
+        }
+        ATT.RTScopeFLIRCCHot = {
+            ["$pp_colour_addr"] = 1, ["$pp_colour_addg"] = 1, ["$pp_colour_addb"] = 1,
+            ["$pp_colour_brightness"] = -0.59, ["$pp_colour_contrast"] = 1, ["$pp_colour_colour"] = 0,
+            ["$pp_colour_mulr"] = 0, ["$pp_colour_mulg"] = 0, ["$pp_colour_mulb"] = 0
+        }
+        """;
+
     private static readonly string[] SniperSightTokens = ["scope_vz", "scope_rf", "scopenvg", "scopetherm", "xl"];
 
     private static string SightLua(string mount, string className, string display, (string Base, string Reticle, int Size, int? Parallax) sight,
@@ -328,12 +363,12 @@ public static partial class QcProjectGenerator
 
     /// <summary>ARC9 attachment of a pack part: the att_cod_*.mdl bonemerged onto the weapon's mount tag (both share the CoD bone names).</summary>
     private static string Arc9AttachmentLua(string mount, string className, string display, string? icon, string extra,
-        IReadOnlyDictionary<string, float>? mods) =>
+        IReadOnlyDictionary<string, float>? mods, string? description) =>
         $"-- mount: {mount}\n" +
         $"ATT.PrintName = \"{display}\"\n" +
         $"ATT.CompactName = \"{display}\"\n" +
         (icon is null ? "" : $"ATT.Icon = Material(\"{icon}\")\n") +
-        "ATT.Description = [[]]\n" +
+        $"ATT.Description = \"{MwBaseLua.LuaString(description ?? "")}\"\n" +
         "ATT.AutoStats = true\n" +
         "ATT.Free = true\n" +
         "ATT.MenuCategory = \"ARC9 - COD20\"\n" +
@@ -347,7 +382,7 @@ public static partial class QcProjectGenerator
     /// GenerateAutoSight subtracts Pos along the tag's right/forward/up, hence (Y, distance, -Z).
     /// Red dots draw a holosight; optics (rtIndex >= 0) paint the scope render target on that model material, like COD2019.
     /// </summary>
-    private static string Arc9SightLua(string baseClass, int size, string reticle, System.Numerics.Vector3 eye, int rtIndex)
+    private static string Arc9SightLua(string baseClass, int size, string reticle, System.Numerics.Vector3 eye, int rtIndex, bool thermal, float reticleScale)
     {
         static string N(float value) => value.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
         var magnification = baseClass switch { "att_optic_2x" => 2, "att_hybrid_3x" => 3, "att_optic_4x" => 4, "att_optic_10x" => 10, _ => 1.15f };
@@ -377,9 +412,9 @@ public static partial class QcProjectGenerator
                 ATT.RTScopeSubmatIndex = {{rtIndex}}
                 ATT.RTScopeMagnification = {{N(magnification)}}
                 ATT.RTScopeReticle = Material("{{reticle}}", "mips smooth")
-                ATT.RTScopeReticleScale = 1
+                ATT.RTScopeReticleScale = {{N(reticleScale)}}
                 ATT.RTScopeColorable = false
-                ATT.ScopeScreenRatio = 0.5
+                ATT.ScopeScreenRatio = 0.5{{(thermal ? "\n" + Arc9Flir : "")}}
 
                 -- The "lens" bodygroup (blank by default for MW Base's att_optic) carries the scope glass.
                 ATT.ModelBodygroups = "01"

@@ -75,7 +75,7 @@ public static partial class CodSoundResolver
     /// (same files and script from every weapon, so one copy once installed together). Swing = attack/plr, body hit =
     /// character/plr steel, wall hit = world/plr steel on cement. Returns this weapon's size: pistols Small, the rest Large.
     /// </summary>
-    public static CodMeleeSet? Melee(string soundDirectory, string output, string codToken)
+    public static CodMeleeSet? Melee(string soundDirectory, string output, string codToken, bool arc9 = false)
     {
         var folder = Path.Combine(soundDirectory, "iw9", "wpn", "melee");
         if (!Directory.Exists(folder)) return null;
@@ -105,7 +105,9 @@ public static partial class CodSoundResolver
                 Register($"COD_Melee.Flesh_{name}", "character", $"melee_character_gun_{size}_steel_plr", $"melee_character_gun_{size}_polymer_plr"),
                 Register($"COD_Melee.World_{name}", "world", $"melee_world_gun_{size}_steel_cement_plr", $"melee_world_gun_{size}_polymer_cement_plr"));
         if (sets.Values.All(set => set is { Swing: null, Flesh: null, World: null })) return null;
-        var script = Path.Combine(output, "lua", "weapons", "mg_base", "modules", "sounds", "mw_sounds_cod_melee.lua");
+        // ARC9 autoloads lua/arc9/shared, MW Base its sounds module folder.
+        var script = arc9 ? Path.Combine(output, "lua", "arc9", "shared", "sh_arc9_cod_melee.lua")
+            : Path.Combine(output, "lua", "weapons", "mg_base", "modules", "sounds", "mw_sounds_cod_melee.lua");
         Directory.CreateDirectory(Path.GetDirectoryName(script)!);
         LuaFile.Write(script, lua.ToString());
         // shortcut: Large for every long gun, Small for pistols; CoD's per-weapon choice is not in the dump.

@@ -9,7 +9,7 @@ internal static class QcSmoke
         {
             Check();
             if (args.Length == 3 && args[0] == "--project") return RunProject(args[1], args[2]);
-            if (args.Length < 4) throw new ArgumentException("usage: --qc-smoke <models> <anims> <locomotion|-> <output> [both|mwbase|arc9], or --qc-smoke --project <aprj> <output>");
+            if (args.Length < 4) throw new ArgumentException("usage: --qc-smoke <models> <anims> <locomotion|-> <output> [mwbase|arc9], or --qc-smoke --project <aprj> <output>");
             var printName = CheckUi(args[0], args[1], args[3]);
             IReadOnlyList<ModelPartSpec> parts = Directory.GetFiles(args[0], "*_LOD0.cast", SearchOption.AllDirectories)
                 .Where(path => !QcAmmoFiller.IsAmmo(path))
@@ -32,7 +32,7 @@ internal static class QcSmoke
                 foreach (var line in log) Console.WriteLine("blueprint ammo: " + line);
                 blueprintFilled = filled;
             }
-            var target = args.Length > 4 && !args[4].StartsWith("--", StringComparison.Ordinal) ? Enum.Parse<QcTarget>(args[4], true) : QcTarget.Both;
+            var target = args.Length > 4 && !args[4].StartsWith("--", StringComparison.Ordinal) ? Enum.Parse<QcTarget>(args[4], true) : QcTarget.MwBase;
             var result = QcProjectGenerator.Generate(new(parts, args[1], args[2] == "-" ? "" : args[2], args[3], ModelPath: args.SkipWhile(arg => arg != "--model").Skip(1).FirstOrDefault() ?? "", Target: target, Scale: new(),
                 ConvertMaterials: args.Contains("--materials"), IncludeHands: args.Contains("--hands"), PrintName: printName,
                 SoundDirectory: args.SkipWhile(arg => arg != "--sounds").Skip(1).FirstOrDefault() ?? "",
@@ -135,7 +135,7 @@ internal static class QcSmoke
             vm.DropQcPaths([output], "sounds");
             Require(vm.QcSoundsFolder == output, "folder drop did not fill sounds");
             Require(vm.QcOutputFolder == output, "folder drop did not fill output");
-            vm.QcTargetIndex = 2;
+            vm.QcTargetIndex = 1;
             vm.QcModelName = "weapons/test/gun";
             var project = Path.Combine(directory, "qc.alchemyproj");
             Require(vm.Workspace.Qc.HandsFile.Length == 0, "Workspace.Qc must only sync on save");
@@ -145,7 +145,7 @@ internal static class QcSmoke
             Require(vm.QcHandsFile.Length == 0 && vm.QcAttachments.Count == 0, "new project kept QC inputs");
             vm.LoadProject(project);
             Require(vm.QcHandsFile == hands && vm.QcAttachments.Count == casts.Length - 2 && vm.QcOutputFolder == output
-                && vm.QcTargetIndex == 2 && vm.QcModelName == "weapons/test/gun" && vm.QcPrintName == "Custom Name" && vm.QcSoundsFolder == output, "project round-trip lost QC inputs");
+                && vm.QcTargetIndex == 1 && vm.QcModelName == "weapons/test/gun" && vm.QcPrintName == "Custom Name" && vm.QcSoundsFolder == output, "project round-trip lost QC inputs");
             return printName;
         }
         finally { Directory.Delete(directory, true); }
