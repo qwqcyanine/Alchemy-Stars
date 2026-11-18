@@ -69,6 +69,12 @@ internal static class CodWeaponDbSmoke
 
             Require(!catalog.Query("zzzz-not-a-weapon-zzzz", CodWeaponFilter.None).Any(), "a nonsense query must return nothing.");
 
+            // Asset-name lookup: the longest whole-segment codename wins, the engine token picks the game.
+            Require(catalog.MatchAsset("vm_jup_jp03_sm_pmike_rec_000_LOD0.cast") is { Name: "HRM-9", EngineCode: "JUP" },
+                "vm_jup_jp03_sm_pmike_rec_000 must resolve to the MWIII HRM-9.");
+            Require(catalog.MatchAsset("vm_sm_pmike63_rec") is { Name: "Wz.55 Striga" }, "sm_pmike63 must beat the shorter sm_pmike.");
+            Require(catalog.MatchAsset("vm_zzzz_rec_000") is null, "an unknown asset must not match.");
+
             // Dataset detection and provenance.
             Require(CodWeaponCatalog.IsDatasetDirectory(CodWeaponCatalog.BuiltInDirectory), "the bundled snapshot must count as a dataset directory.");
             Require(!CodWeaponCatalog.IsDatasetDirectory(temporary), "an empty folder must not count as a dataset directory.");

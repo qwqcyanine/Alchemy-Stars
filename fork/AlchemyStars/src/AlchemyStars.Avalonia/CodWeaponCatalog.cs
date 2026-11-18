@@ -240,6 +240,22 @@ public sealed class CodWeaponCatalog
             .ToArray();
     }
 
+    /// <summary>
+    /// Resolves an exported asset name such as <c>vm_jup_jp03_sm_pmike_rec_000_LOD0</c> to its record:
+    /// the longest codename that appears as whole <c>_</c>-separated segments wins (sm_pmike over a
+    /// one-segment hit), and an engine token in the name (jup) breaks ties between games.
+    /// </summary>
+    public CodWeapon? MatchAsset(string assetName)
+    {
+        var segments = Path.GetFileNameWithoutExtension(assetName ?? string.Empty).ToLowerInvariant().Split('_', StringSplitOptions.RemoveEmptyEntries);
+        var padded = "_" + string.Join('_', segments) + "_";
+        return Weapons
+            .Where(weapon => weapon.Codename.Length > 1 && padded.Contains("_" + weapon.Codename.ToLowerInvariant() + "_", StringComparison.Ordinal))
+            .OrderByDescending(weapon => weapon.Codename.Length)
+            .ThenByDescending(weapon => segments.Contains(weapon.EngineCode.ToLowerInvariant()))
+            .FirstOrDefault();
+    }
+
     private static int Score(CodWeapon weapon, string needle)
     {
         if (needle.Length == 0) return 0;
