@@ -10,7 +10,8 @@ internal static class SmdAnimationExporter
 {
     private const float TwoPi = MathF.PI * 2;
 
-    public static void Save(string outputPath, SkeletonAnimation animation)
+    /// <param name="scale">Translation scale (1/2.54 converts CAST centimetres to Source inches).</param>
+    public static void Save(string outputPath, SkeletonAnimation animation, float scale = 1)
     {
         var skeleton = animation.Skeleton
             ?? throw new InvalidDataException("SMD animation export requires a skeleton.");
@@ -56,7 +57,7 @@ internal static class SmdAnimationExporter
 
                 writer.WriteLine(string.Create(
                     CultureInfo.InvariantCulture,
-                    $"{bone.Index} {Number(translation.X)} {Number(translation.Y)} {Number(translation.Z)} {Number(euler.X)} {Number(euler.Y)} {Number(euler.Z)}"));
+                    $"{bone.Index} {Number(translation.X * scale)} {Number(translation.Y * scale)} {Number(translation.Z * scale)} {Number(euler.X)} {Number(euler.Y)} {Number(euler.Z)}"));
             }
         }
 
@@ -71,6 +72,13 @@ internal static class SmdAnimationExporter
         var norm = Math.Sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
         qx /= norm; qy /= norm; qz /= norm; qw /= norm;
         var sinY = Math.Clamp(2 * (qw * qy - qz * qx), -1, 1);
+        // Gimbal lock (pitch ±90°, e.g. CoD j_mainroot): both atan2 terms are 0/0, so only x - z is defined.
+        // Put it all in x with z = 0, read from the R = Rz*Ry*Rx matrix: m11 = cos x, m12 = -sin x.
+        if (Math.Abs(sinY) > 1 - 1e-6)
+        {
+            var lockedX = Math.Atan2(-2 * (qy * qz - qw * qx), 1 - 2 * (qx * qx + qz * qz));
+            return new Vector3((float)lockedX, (float)(Math.Sign(sinY) * Math.PI / 2), 0);
+        }
         var x = Math.Atan2(2 * (qw * qx + qy * qz), 1 - 2 * (qx * qx + qy * qy));
         var y = Math.Asin(sinY);
         var z = Math.Atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz));
