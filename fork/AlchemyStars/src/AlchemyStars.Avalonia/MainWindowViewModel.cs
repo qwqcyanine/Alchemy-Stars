@@ -14,6 +14,7 @@ public enum WorkspacePage
     DualAnimations,
     CodWeaponDb,
     ModelMerger,
+    QcGenerator,
 }
 
 public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDisposable
@@ -120,6 +121,7 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
             OnPropertyChanged(nameof(OutputUpAxisIndex));
             OnPropertyChanged(nameof(IsCastOutput));
             SelectedDual = workspace.DualAnimations.FirstOrDefault();
+            LoadQcFromWorkspace();
         }
     }
 
@@ -140,6 +142,7 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
         WorkspacePage.DualAnimations => Text.DualAnimations,
         WorkspacePage.CodWeaponDb => Text.CodDbNavigation,
         WorkspacePage.ModelMerger => Text.ModelMergerNavigation,
+        WorkspacePage.QcGenerator => Text.QcNavigation,
         _ => Text.AnimationBlend,
     };
     public string WindowTitle => $"{Text.ProductName} | {CurrentProjectLabel} | {Version}";
@@ -290,7 +293,7 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
             SelectedAnimation = Animations.FirstOrDefault();
             SelectedPart = Parts.FirstOrDefault();
             FooterStatus = string.Format(CultureInfo.CurrentCulture, Text.ProjectLoaded, Path.GetFileName(CurrentProjectPath));
-            SelectPage(WorkspacePage.Animations);
+            if (!IsQcPage) SelectPage(WorkspacePage.Animations);
         }
         catch (Exception exception)
         {
@@ -307,6 +310,7 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
             return;
         try
         {
+            SaveQcToWorkspace();
             projectStore.Save(Workspace, destination);
             CurrentProjectPath = Path.GetFullPath(destination);
             preferences.RememberDirectory("project", CurrentProjectPath);
@@ -958,6 +962,8 @@ public sealed partial class MainWindowViewModel : INotifyPropertyChanged, IDispo
         OnPropertyChanged(nameof(IsAboutPage));
         OnPropertyChanged(nameof(IsCodWeaponDbPage));
         OnPropertyChanged(nameof(IsModelMergerPage));
+        OnPropertyChanged(nameof(IsQcPage));
+        OnPropertyChanged(nameof(ShowsProjectToolbar));
     }
 
     private static string NormalizeLanguageMode(string? value) => value switch
