@@ -25,6 +25,15 @@ Alchemy Stars is based on [Scobalula/Alchemist](https://github.com/Scobalula/Alc
 which is licensed under GPL-3.0. The full source and license are provided in
 `fork/AlchemyStars`.
 
+## CoD material conversion (QC generator)
+
+`fork/AlchemyStars/src/AlchemyStars.Engine/Qc/CodMaterialConverter.cs` re-implements, without copying
+code, the CoD colour/specular split and hemi-octahedral NOG decode documented by
+[Scobalula/GameImageUtil](https://github.com/Scobalula/GameImageUtil) (GPL-3.0) and the Source phong
+mapping used by [9lbw/mwb-materials](https://github.com/9lbw/mwb-materials). The semantic layout of
+saluki `_mat_info` exports was cross-checked against
+[ez4cywa/ez4cywa-cod-blender-shaders](https://github.com/ez4cywa/ez4cywa-cod-blender-shaders) (MIT).
+
 ## RedFox and Cast.NET
 
 The original Alchemist pipeline depends on Scobalula/RedFox and Cast.NET. Their
